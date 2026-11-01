@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| **Status** | v0.1.0 (MVP) delivered · v0.2 feature-complete (MCP proxy, OIDC sign-in, key rotation, Postgres) |
+| **Status** | v0.2.0 released (MCP proxy, OIDC sign-in, key rotation, Postgres, approver console, rate limiting, receipts) |
 | **Owner** | Mohammad Tawhid Mahmud |
 | **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite or PostgreSQL |
 | **License** | MIT |
@@ -173,7 +173,7 @@ gantt
 
 | Metric | Target (v0.1) | Result (v0.1.0) | How it's measured |
 |---|---|---|---|
-| Test coverage | ≥ 85% lines | ✅ **97%** (219 tests) | `pytest --cov`, CI floor 90% |
+| Test coverage | ≥ 85% lines | ✅ **95%** (346 tests on SQLite and PostgreSQL) | `pytest --cov`, CI floor 90% |
 | Authorization latency (in-process, heuristics only) | p95 < 5 ms | ✅ **0.95 ms** clean call · **3.6 ms** with 2.5 KB of context | 500-call micro-benchmark incl. token verification and audit write |
 | Injection corpus recall / FPR | ≥ 90% / ≤ 10% | ✅ **95.2% / 8.7%** (precision 90.9%) | `agentwarden eval` on the bundled corpus, CI gate |
 | Static analysis | 0 high-severity findings | ✅ 0 findings | `bandit`, `ruff` security rules, Trojan Source scan |

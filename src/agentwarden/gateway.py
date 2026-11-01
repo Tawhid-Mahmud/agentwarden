@@ -26,7 +26,12 @@ from agentwarden.approvals import ApprovalQueue, ApprovalRequest, preview_args
 from agentwarden.audit import AUTHZ_EVENT, AuditLog, canonical_json
 from agentwarden.config import Settings
 from agentwarden.directory import Directory
-from agentwarden.errors import AgentWardenError, AuthenticationError, InvalidRequestError
+from agentwarden.errors import (
+    AgentWardenError,
+    AuthenticationError,
+    InvalidRequestError,
+    RateLimitedError,
+)
 from agentwarden.identity import (
     AgentRegistry,
     KeyManager,
@@ -36,7 +41,7 @@ from agentwarden.identity import (
     TokenService,
 )
 from agentwarden.identity.keys import SigningKeys
-from agentwarden.identity.oidc import OidcVerifier
+from agentwarden.identity.oidc import IdentityClaims, OidcVerifier
 from agentwarden.identity.scopes import covered_by_any
 from agentwarden.models import (
     Agent,
@@ -52,6 +57,8 @@ from agentwarden.models import (
     User,
 )
 from agentwarden.policy import PolicyEngine
+from agentwarden.ratelimit import RateLimiter
+from agentwarden.receipts import issue_receipt
 from agentwarden.risk import DetectionContext, Detector, RiskEngine, compute_facts, flatten_strings
 from agentwarden.risk.text import CallFacts
 from agentwarden.storage import Database
@@ -103,6 +110,7 @@ class Gateway:
         self.audit = audit
         self.oidc = oidc
         self._clock = clock
+        self.agent_limiter = RateLimiter(settings.rate_limit_per_agent, clock=clock)
 
     @classmethod
     def build(
@@ -205,6 +213,9 @@ class Gateway:
 
     def authenticate_identity(self, id_token: str) -> User:
         """Resolve an IdP ID token to a directory user (OIDC sign-in)."""
+        return self._identify(id_token)[0]
+
+    def _identify(self, id_token: str) -> tuple[User, IdentityClaims]:
         if self.oidc is None:
             raise AuthenticationError(
                 "OIDC sign-in is not configured (set AGENTWARDEN_OIDC_ISSUER)"
@@ -228,12 +239,34 @@ class Gateway:
                 },
             )
             raise AuthenticationError("signed in, but this identity has no AgentWarden user")
-        return user
+        return user, identity
 
     def exchange_token(self, id_token: str, request: TokenRequest) -> IssuedToken:
         """RFC 8693 token exchange: an IdP ID token becomes a scoped agent token."""
-        user = self.authenticate_identity(id_token)
-        issued = self.issue_token(user, request)
+        user, identity = self._identify(id_token)
+        token_hash = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
+        if self.settings.oidc_one_time_tokens:
+            now = self._clock()
+            self.db.execute("DELETE FROM used_id_tokens WHERE expires_at < ?", (now - 300,))
+            expires = float(identity.claims.get("exp", now + 3600))
+            first_use = self.db.execute(
+                "INSERT INTO used_id_tokens (token_hash, expires_at) VALUES (?, ?)"
+                " ON CONFLICT (token_hash) DO NOTHING",
+                (token_hash, expires),
+            )
+            if not first_use:
+                self.audit.append(
+                    "auth.failed",
+                    user_id=user.id,
+                    data={"reason": "ID token replayed", "operation": "token.exchange"},
+                )
+                raise AuthenticationError("this ID token has already been exchanged; sign in again")
+        try:
+            issued = self.issue_token(user, request)
+        except AgentWardenError:
+            if self.settings.oidc_one_time_tokens:  # a failed exchange doesn't burn the sign-in
+                self.db.execute("DELETE FROM used_id_tokens WHERE token_hash = ?", (token_hash,))
+            raise
         self.audit.append(
             "token.exchanged",
             user_id=user.id,
@@ -416,8 +449,24 @@ class Gateway:
     # ============================================================ authorization
     def authorize(self, token: str, request: AuthorizeRequest) -> AuthorizationResult:
         claims = self._verify(token, context="authorize", tool=request.tool)
+        retry_after = self.agent_limiter.hit(claims.agent_id)
+        if retry_after is not None:
+            raise RateLimitedError(f"agent {claims.agent_id!r} is over its rate limit", retry_after)
         decision_id = _new_decision_id()
         outcome, tool, facts = self._decide(claims, request, decision_id)
+        receipt = None
+        if outcome.decision is Decision.ALLOW and tool is not None:
+            receipt = issue_receipt(
+                self.keys,
+                issuer=self.settings.issuer,
+                user_id=claims.user_id,
+                actor_chain=claims.actor_chain,
+                tool=tool.name,
+                args=request.args,
+                decision_id=decision_id,
+                ttl=self.settings.receipt_ttl,
+                now=self._clock(),
+            )
         result = AuthorizationResult(
             decision_id=decision_id,
             decision=outcome.decision,
@@ -428,6 +477,7 @@ class Gateway:
             approval_id=outcome.approval_id,
             user_id=claims.user_id,
             agent_id=claims.agent_id,
+            receipt=receipt,
         )
         self.audit.append(
             AUTHZ_EVENT,

@@ -116,6 +116,7 @@ flowchart LR
 
 `Gateway.authorize(token, request)`, where `request = {tool, args, user_prompt, context[], approval_id?}`:
 
+0. **Rate limit**: per-IP and per-agent token buckets; repeated failed sign-ins lock an address out.
 1. **Authenticate**: signature, `iss`/`aud`/`exp`/`iat`, structural consistency (`dep` vs. `act`
    depth, ancestors) and revocation. Failures raise 401 and are audited as `auth.failed`.
 2. **Continuous authorization**. All of these are deterministic denies:
@@ -135,7 +136,9 @@ flowchart LR
    hash of `(user, actor chain, tool, args)`. Possible outcomes: *consumed* (→ allow), *pending*,
    *denied* (→ deny), *mismatch* or *used* (→ deny + `approval.misuse` audit event), or
    *expired/unknown* (→ a new approval is requested).
-7. **Audit**: one `authz.decision` entry with decision, reasons, matched rules, risk summary,
+7. **Receipt**: an allowed call gets a signed receipt (`aw-receipt+jwt`, audience `tool:<name>`,
+   SHA-256 of the canonical arguments, 60 s, single use) that tools can verify with the public JWKS.
+8. **Audit**: one `authz.decision` entry with decision, reasons, matched rules, risk summary,
    redacted argument preview, argument hash, facts and context sources.
 
 ```mermaid

@@ -7,7 +7,7 @@ policy, with a risk score that understands prompt injection.
 
 [![CI](https://github.com/Tawhid-Mahmud/agentwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/Tawhid-Mahmud/agentwarden/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
-![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > An email tells your inbox agent, in invisible Unicode, to *"forward the Q3 financials to
@@ -45,6 +45,8 @@ long-lived API key. Three things go wrong:
     This doesn't depend on how the injection was phrased.
   - **Secret, exfiltration and behavioral-anomaly** detectors.
   - Optional **Claude judge** (structured outputs), off by default.
+- **Tool-side receipts**: tools can verify a signed, single-use proof that AgentWarden allowed exactly this call.
+- **Rate limiting**: per IP, per agent, and lockout after repeated failed sign-ins.
 - **Approver console** (`/console`): review pending agent actions with full evidence, then approve or deny.
 - **Human-in-the-loop**: approvals bound to `sha256(user, actor chain, tool, args)`, single-use,
   expiring, with separation of duties (approver role, no self-approval).
@@ -157,6 +159,12 @@ curl -s localhost:8000/v1/authorize -H "Authorization: Bearer $TOKEN" -H "conten
 
 Or with Docker: `docker compose up --build`.
 
+**Rate limits** apply per client IP (600 requests/min), more strictly to sign-in and token
+endpoints (30/min), and per agent to authorization calls (300/min). After 20 failed sign-ins in a
+minute, an address is locked out briefly. Over-limit requests get `429` with `Retry-After`. Tune
+them with `AGENTWARDEN_RATE_LIMIT_*`, where `0` disables a limit. Behind a reverse proxy, set
+`AGENTWARDEN_TRUST_PROXY_HEADERS=true` so limits use the real client address.
+
 **Rotating the signing key** never breaks live tokens. The new key signs from then on, the old one
 keeps verifying until the longest token lifetime has passed, and other running instances pick up the
 change within seconds:
@@ -245,14 +253,38 @@ curl -s localhost:8000/v1/token/exchange \
   --data-urlencode "scope=email:read email:send"
 ```
 
-Users are matched by **verified** email (`email` in `directory.yaml`), or by `sub` with
+Each ID token can be exchanged **once**, even across instances, so a leaked login token can't be
+replayed to mint more agent tokens. Users are matched by **verified** email (`email` in `directory.yaml`), or by `sub` with
 `AGENTWARDEN_OIDC_USER_CLAIM=sub`. ID tokens are checked strictly: asymmetric algorithms only,
 exact issuer, audience and `azp`, expiry, and keys from the IdP's JWKS with automatic rotation.
 Approvers can also sign in with `Authorization: Bearer <ID token>`. To try it without a real IdP,
 run the throwaway [`examples/dev_idp.py`](examples/dev_idp.py) (development only) and point
 `AGENTWARDEN_OIDC_ISSUER` at `http://127.0.0.1:9000`.
 
-### 6. Put any MCP server behind AgentWarden
+### 6. Make tools enforce decisions themselves (receipts)
+
+Every **allowed** decision comes with a `receipt`: a 60-second, single-use signed token bound to
+the exact tool and arguments. A tool that checks receipts can't be called by an agent that skipped
+AgentWarden, reused an old decision, or changed the arguments after approval:
+
+```python
+from agentwarden.receipts import ReceiptVerifier
+
+verifier = ReceiptVerifier(
+    issuer="https://agentwarden.local",
+    jwks_url="https://agentwarden.internal/.well-known/jwks.json",  # follows key rotation
+)
+
+def send_email(to: list[str], body: str, receipt: str) -> None:
+    verifier.verify(receipt, tool="send_email", args={"to": to, "body": body})  # raises if not allowed
+    ...
+```
+
+With the SDK, `@warden.guard(pass_receipt=True)` hands the receipt to your function as
+`agentwarden_receipt`. For HTTP tools, forward it as the `X-AgentWarden-Receipt` header. The MCP
+proxy adds it to every forwarded call as `_meta["agentwarden/receipt"]`.
+
+### 7. Put any MCP server behind AgentWarden
 
 `agentwarden mcp-proxy` wraps a stdio [MCP](https://modelcontextprotocol.io) server. The agent's
 MCP client launches the proxy instead of the server, and every `tools/call` is authorized before
@@ -326,8 +358,11 @@ Public-benchmark evaluation is on the [roadmap](docs/PROJECT_PLAN.md#8-roadmap-p
 
 ```bash
 make install   # editable install with dev + LLM extras
-make check     # ruff, mypy --strict, bandit, hidden-character scan, 219 tests (97% coverage), policy suite, eval gate
+make check     # ruff, mypy --strict, bandit, hidden-character scan, tests (95% coverage), policy suite, eval gate
 ```
+
+The suite has 346 tests. Storage tests also run against PostgreSQL when
+`AGENTWARDEN_TEST_DATABASE_URL` points at a throwaway database, which CI does on Postgres 16.
 
 ```text
 src/agentwarden/
@@ -346,8 +381,8 @@ src/agentwarden/
 
 ## Status & limitations
 
-v0.1 is a working MVP for learning, demos and evaluation, and has **not been hardened for
-production**. There's no rate limiting yet, and that's on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
+AgentWarden is a young project for learning, demos and evaluation, and hasn't had an external
+security review yet (it's on the [roadmap](docs/PROJECT_PLAN.md)). Heuristic detection can be
 evaded; see the [threat model](docs/THREAT_MODEL.md) for what is and isn't covered. Report
 security issues as described in [SECURITY.md](SECURITY.md).
 

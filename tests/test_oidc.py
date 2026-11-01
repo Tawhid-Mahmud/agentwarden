@@ -281,7 +281,13 @@ def test_token_exchange_success(client: TestClient, idp: FakeIdP, gw: Gateway) -
         and claims.task == "triage inbox"
     )
     assert gw.audit.query(event_type="token.exchanged")[0].data["idp"] == ISSUER
-    via_json = exchange(client, idp.token(), as_json=True, agent_id="inbox-assistant", audience="")
+    via_json = exchange(
+        client,
+        idp.token(nonce="second-sign-in"),
+        as_json=True,
+        agent_id="inbox-assistant",
+        audience="",
+    )
     assert via_json.status_code == 200
     agent = client.post(
         "/v1/authorize",

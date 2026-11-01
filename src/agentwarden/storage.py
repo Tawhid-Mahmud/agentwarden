@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS approvals (
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 
+-- ID tokens already exchanged (one-time use), kept until they expire anyway.
+CREATE TABLE IF NOT EXISTS used_id_tokens (
+    token_hash TEXT PRIMARY KEY,
+    expires_at {real} NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     seq        {bigint} PRIMARY KEY,
     ts         TEXT NOT NULL,
@@ -88,7 +94,14 @@ CREATE INDEX IF NOT EXISTS idx_audit_agent_ts ON audit_log(agent_id, ts);
 #: Kept for compatibility: the SQLite flavor of the schema.
 SCHEMA = _TABLES.format(real="REAL", bigint="INTEGER")
 POSTGRES_SCHEMA = _TABLES.format(real="DOUBLE PRECISION", bigint="BIGINT")
-TABLES = ("agents", "revoked_tokens", "subject_revocations", "approvals", "audit_log")
+TABLES = (
+    "agents",
+    "revoked_tokens",
+    "subject_revocations",
+    "approvals",
+    "used_id_tokens",
+    "audit_log",
+)
 
 #: Columns added after a table first shipped: (table, column, definition). Applied on startup to
 #: databases created by older versions; additive only, so it is safe to run repeatedly.

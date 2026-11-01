@@ -18,6 +18,7 @@ from agentwarden.gateway import Gateway
 from agentwarden.mcp import McpProxy, ToolMapping
 from agentwarden.mcp.proxy import USER_PROMPT_META_KEY, result_text
 from agentwarden.models import TokenRequest
+from agentwarden.receipts import MCP_META_KEY, ReceiptVerifier
 from agentwarden.sdk import LocalWarden
 from tests.conftest import FakeClock
 
@@ -54,11 +55,18 @@ def text_of(message: dict[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------------------ core logic
-def test_allowed_call_is_forwarded_unchanged(proxy: McpProxy) -> None:
-    route = proxy.from_client(
-        call(1, "send_email", {"to": ["bob@acme.example"]}, prompt="email bob")
-    )
-    assert route.to == "upstream" and route.message is None
+def test_allowed_call_is_forwarded_with_a_receipt(
+    proxy: McpProxy, gw: Gateway, settings: Settings
+) -> None:
+    args = {"to": ["bob@acme.example"]}
+    route = proxy.from_client(call(1, "send_email", args, prompt="email bob"))
+    assert route.to == "upstream" and route.message is not None
+    params = route.message["params"]
+    assert params["name"] == "send_email" and params["arguments"] == args
+    assert params["_meta"][USER_PROMPT_META_KEY] == "email bob"  # existing _meta is preserved
+    verifier = ReceiptVerifier(issuer=settings.issuer, jwks=gw.keys.jwks())
+    claims = verifier.verify(params["_meta"][MCP_META_KEY], tool="send_email", args=args)
+    assert claims.user_id == "alice" and claims.agent_id == "inbox-assistant"
 
 
 def test_unknown_and_out_of_scope_tools_are_answered_by_the_proxy(proxy: McpProxy) -> None:

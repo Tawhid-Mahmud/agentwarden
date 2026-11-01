@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import resources
@@ -33,6 +34,7 @@ from agentwarden.errors import (
     InvalidRequestError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
 )
 from agentwarden.gateway import Gateway
 from agentwarden.models import (
@@ -45,12 +47,14 @@ from agentwarden.models import (
     TokenRequest,
     User,
 )
+from agentwarden.ratelimit import RateLimiter
 
 _STATUS = {
     AuthenticationError: 401,
     PermissionDeniedError: 403,
     NotFoundError: 404,
     ApprovalError: 409,
+    RateLimitedError: 429,
     InvalidRequestError: 400,
     ConfigurationError: 500,
 }
@@ -76,6 +80,9 @@ class RevokeBody(BaseModel):
 
 
 # OAuth URNs from RFC 8693, not secrets.
+#: Endpoints that mint credentials or check them: stricter per-IP limits apply.
+SENSITIVE_PATHS = frozenset({"/v1/tokens", "/v1/token/exchange", "/v1/tokens/delegate", "/v1/me"})
+
 TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105  # nosec B105
 ISSUED_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"  # noqa: S105  # nosec B105
 SUBJECT_TOKEN_TYPES = {
@@ -211,11 +218,54 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
     async def _handle(_: Request, exc: AgentWardenError) -> JSONResponse:
         status = _error_status(exc)
         headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+        if isinstance(exc, RateLimitedError):
+            headers = {"Retry-After": str(math.ceil(exc.retry_after))}
         return JSONResponse(
             status_code=status,
             content={"error": type(exc).__name__, "detail": str(exc)},
             headers=headers,
         )
+
+    settings_ = app.state.gateway.settings
+    ip_limiter = RateLimiter(settings_.rate_limit_per_ip)
+    sensitive_limiter = RateLimiter(settings_.rate_limit_sensitive_per_ip)
+    failure_limiter = RateLimiter(settings_.rate_limit_auth_failures_per_ip)
+
+    def client_ip(request: Request) -> str:
+        if settings_.trust_proxy_headers:
+            forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+        return request.client.host if request.client else "unknown"
+
+    def too_many(retry_after: float, why: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "RateLimitedError", "detail": why},
+            headers={"Retry-After": str(math.ceil(retry_after))},
+        )
+
+    @app.middleware("http")
+    async def _rate_limit(request: Request, call_next: Any) -> Response:
+        path = request.url.path
+        if not path.startswith("/v1/"):
+            passthrough: Response = await call_next(request)
+            return passthrough
+        ip = client_ip(request)
+        locked = failure_limiter.peek(ip)
+        if locked is not None:
+            return too_many(locked, "too many failed sign-ins from this address; try again later")
+        retry = ip_limiter.hit(ip)
+        if retry is None and path in SENSITIVE_PATHS:
+            retry = sensitive_limiter.hit(ip)
+        if retry is not None:
+            return too_many(retry, "too many requests from this address")
+        response: Response = await call_next(request)
+        if response.status_code == 401 or (
+            path == "/v1/token/exchange" and response.status_code == 400
+        ):
+            failure_limiter.hit(ip)
+        return response
 
     @app.middleware("http")
     async def _security_headers(request: Request, call_next: Any) -> Response:

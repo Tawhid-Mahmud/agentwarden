@@ -59,6 +59,20 @@ class Settings:
     oidc_user_claim: str = "email"
     #: Demo-grade X-API-Key user authentication. Turn off once OIDC is configured.
     api_keys_enabled: bool = True
+    #: Each ID token can be exchanged once (replays are refused across instances).
+    oidc_one_time_tokens: bool = True
+    #: Requests per minute per client IP to the API (0 disables).
+    rate_limit_per_ip: int = 600
+    #: Requests per minute per client IP to sign-in and token endpoints (0 disables).
+    rate_limit_sensitive_per_ip: int = 30
+    #: Failed authentications per minute per client IP before it is locked out (0 disables).
+    rate_limit_auth_failures_per_ip: int = 20
+    #: Authorization calls per minute per agent (0 disables).
+    rate_limit_per_agent: int = 300
+    #: Use the first X-Forwarded-For address as the client IP. Only behind a trusted proxy.
+    trust_proxy_headers: bool = False
+    #: Lifetime of authorization receipts handed to tools.
+    receipt_ttl: int = 60
 
     def __post_init__(self) -> None:
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
@@ -79,6 +93,16 @@ class Settings:
             raise ConfigurationError("oidc_audience (the client id) is required with oidc_issuer")
         if self.oidc_user_claim not in ("email", "sub"):
             raise ConfigurationError("oidc_user_claim must be 'email' or 'sub'")
+        for name in (
+            "rate_limit_per_ip",
+            "rate_limit_sensitive_per_ip",
+            "rate_limit_auth_failures_per_ip",
+            "rate_limit_per_agent",
+        ):
+            if getattr(self, name) < 0:
+                raise ConfigurationError(f"{name} can't be negative (0 disables it)")
+        if not 5 <= self.receipt_ttl <= 600:
+            raise ConfigurationError("receipt_ttl must be between 5 and 600 seconds")
         if not self.api_keys_enabled and not self.oidc_issuer:
             raise ConfigurationError("disabling API keys requires OIDC, or no user could sign in")
 
@@ -135,4 +159,15 @@ class Settings:
             oidc_jwks_url=get("OIDC_JWKS_URL"),
             oidc_user_claim=get("OIDC_USER_CLAIM") or base.oidc_user_claim,
             api_keys_enabled=(get("API_KEYS") or "true").lower() in _TRUE,
+            oidc_one_time_tokens=(get("OIDC_ONE_TIME_TOKENS") or "true").lower() in _TRUE,
+            rate_limit_per_ip=get_int("RATE_LIMIT_PER_IP", base.rate_limit_per_ip),
+            rate_limit_sensitive_per_ip=get_int(
+                "RATE_LIMIT_SENSITIVE_PER_IP", base.rate_limit_sensitive_per_ip
+            ),
+            rate_limit_auth_failures_per_ip=get_int(
+                "RATE_LIMIT_AUTH_FAILURES_PER_IP", base.rate_limit_auth_failures_per_ip
+            ),
+            rate_limit_per_agent=get_int("RATE_LIMIT_PER_AGENT", base.rate_limit_per_agent),
+            trust_proxy_headers=(get("TRUST_PROXY_HEADERS") or "").lower() in _TRUE,
+            receipt_ttl=get_int("RECEIPT_TTL", base.receipt_ttl),
         )

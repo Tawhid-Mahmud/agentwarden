@@ -63,14 +63,15 @@ identity, delegated scopes, policy, provenance and human approval.
 | Boundary / threat | Mitigation in v0.1 | Residual risk / roadmap |
 |---|---|---|
 | **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Bearer tokens can be replayed until expiry → **DPoP sender-constrained tokens (v0.3)**; short TTLs (15 min default) limit the window |
-| **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | An ID token can be replayed into token exchange until it expires; one-time use (`jti` tracking) is a candidate hardening |
+| **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | Each ID token can be exchanged once (tracked in the database, so across instances); replays are refused and audited |
 | **T**ampering: changing token claims | Signature covers all claims | n/a |
 | **T**ampering: changing approved arguments (A2) | Approval bound to `sha256(user, actor chain, tool, args)`; mismatch → deny + `approval.misuse` event | n/a |
 | **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain → export checkpoints to WORM storage or a SIEM (v0.3) |
+| **T**ampering: calling a tool directly, skipping AgentWarden (A2) | MCP proxy mode; signed authorization receipts that tools verify (bound to tool, argument hash, 60 s lifetime, single use) | Tools that don't verify receipts and are reachable outside MCP |
 | **R**epudiation: "the agent did it, not me" | Every decision names `user`, `agent`, full `actor_chain`, token `jti`, task and argument hash | n/a |
 | **I**nformation disclosure: data exfiltration via tool arguments (A1) | Taint tracking of destinations, secret detection, exfiltration heuristics, approval for external recipients and outbound writes | Exfiltration through *allowed* internal channels, or steganography in content, is not detected |
 | **I**nformation disclosure: secrets in logs | Redaction before audit and approval storage; previews truncated | Redaction is pattern-based; unknown secret formats may persist |
-| **D**enial of service: flooding authorize or audit (A2/A3) | Input size limits on requests; velocity anomaly signal | **Rate limiting (v1.0)**; audit-log growth from unauthenticated failures |
+| **D**enial of service: flooding authorize or audit (A2/A3) | Per-IP and per-agent token-bucket rate limits (`429` + `Retry-After`), stricter limits on credential endpoints, lockout after repeated failed sign-ins, input size limits, velocity anomaly signal | Limits are per instance (N instances ≈ N× the rate); global quotas belong in the load balancer |
 | **E**levation of privilege: scope escalation (A2) | Scope ceilings, attenuation, concrete-only requested scopes, continuous re-checks against current ceiling and entitlements | n/a |
 | **E**levation of privilege: escalation through delegation (A2) | `scopes ⊆ parent`, `exp ≤ parent`, depth limit, cycle detection, untrusted-tier and deep-delegation policy rules | n/a |
 | **E**levation of privilege: self-approval (A4) | Approver role required; requester can't review their own request | Collusion between two insiders |
@@ -89,7 +90,7 @@ identity, delegated scopes, policy, provenance and human approval.
 | **LLM07 System Prompt Leakage** | 🟡 Partial | `system_prompt_probe` signal in untrusted content |
 | LLM08 Vector and Embedding Weaknesses | 🟡 Indirect | Retrieved chunks can be reported as untrusted context and are scanned and taint-tracked |
 | LLM09 Misinformation | ⚪ Out of scope | n/a |
-| **LLM10 Unbounded Consumption** | 🟡 Partial | Request size limits, velocity signal; rate limiting is on the roadmap |
+| **LLM10 Unbounded Consumption** | 🟢 Covered for the gateway | Per-agent and per-IP rate limits, request size limits, velocity signal |
 
 ## Agentic threats
 
@@ -115,14 +116,16 @@ identity, delegated scopes, policy, provenance and human approval.
 - **AgentWarden only sees calls routed through it.** With the SDK, an agent that skips
   `authorize()` bypasses it. **MCP proxy mode** closes this for MCP tools: the server is only
   reachable through the proxy, which authorizes every `tools/call` and records every result.
-  Tools reached outside MCP still need tool-side token validation (roadmap).
-- **No rate limiting.** See the roadmap. Rotation limits how long a stolen signing key is
-  useful, but tokens it signed stay valid until they expire or are revoked.
+  For any other tool, **authorization receipts** let the tool enforce decisions itself: it
+  refuses calls without a valid, unexpired, single-use receipt for exactly its name and arguments.
+  This only protects tools that verify receipts.
+- **Rate limits are per instance.** Rotation limits how long a stolen signing key is useful, but
+  tokens it signed stay valid until they expire or are revoked.
 - **The optional LLM judge sends untrusted content to a third party** (the Anthropic API) when enabled.
 
 ## Security testing
 
-Adversarial cases covered by the test suite (219 tests):
+Adversarial cases covered by the test suite (346 tests):
 
 - **Tokens**: `alg=none`, HS256 key confusion using the public key, foreign signing keys, unknown
   `kid`, payload tampering, expiry, future `iat`, wrong audience, revocation (token, ancestor,

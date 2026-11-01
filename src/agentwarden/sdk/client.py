@@ -38,7 +38,7 @@ from typing import Any, ParamSpec, TypeVar
 
 import httpx
 
-from agentwarden.errors import AgentWardenError, AuthenticationError
+from agentwarden.errors import AgentWardenError, AuthenticationError, RateLimitedError
 from agentwarden.models import AuthorizationResult, AuthorizeRequest, ContextSegment, Decision
 
 P = ParamSpec("P")
@@ -135,9 +135,14 @@ class _WardenBase:
         return result
 
     def guard(
-        self, tool: str | None = None, *, observe_output: bool = False
+        self, tool: str | None = None, *, observe_output: bool = False, pass_receipt: bool = False
     ) -> Callable[[Callable[P, R]], Callable[P, R]]:
-        """Decorator: authorize every call to the wrapped function before running it."""
+        """Decorator: authorize every call to the wrapped function before running it.
+
+        With ``pass_receipt=True`` the wrapped function also receives ``agentwarden_receipt=...``
+        (forward it to tools that verify receipts, e.g. as the ``X-AgentWarden-Receipt`` header).
+        The receipt covers the arguments the function was called with, not ``agentwarden_receipt``.
+        """
 
         def decorator(func: Callable[P, R]) -> Callable[P, R]:
             name = tool or func.__name__
@@ -145,10 +150,15 @@ class _WardenBase:
 
             @functools.wraps(func)
             def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-                bound = signature.bind(*args, **kwargs)
+                call_kwargs: dict[str, Any] = dict(kwargs)
+                call_kwargs.pop("agentwarden_receipt", None)
+                bound = signature.bind_partial(*args, **call_kwargs)
                 bound.apply_defaults()
-                self.check(name, dict(bound.arguments))
-                result = func(*args, **kwargs)
+                arguments = {k: v for k, v in bound.arguments.items() if k != "agentwarden_receipt"}
+                decision = self.check(name, arguments)
+                if pass_receipt:
+                    call_kwargs["agentwarden_receipt"] = decision.receipt
+                result = func(*args, **call_kwargs)
                 if observe_output:
                     self.observe(f"tool:{name}", result)
                 return result
@@ -185,6 +195,9 @@ class WardenClient(_WardenBase):
         )
         if response.status_code == 401:
             raise AuthenticationError(response.json().get("detail", "authentication failed"))
+        if response.status_code == 429:
+            retry_after = float(response.headers.get("Retry-After", "1"))
+            raise RateLimitedError(response.json().get("detail", "rate limited"), retry_after)
         response.raise_for_status()
         return AuthorizationResult.model_validate(response.json())
 

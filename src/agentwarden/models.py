@@ -149,6 +149,8 @@ class AuthorizationResult(BaseModel):
     approval_id: str | None = None
     user_id: str | None = None
     agent_id: str | None = None
+    #: Signed proof that this exact call was allowed, for tools that enforce it (allow only).
+    receipt: str | None = Field(default=None, repr=False)
 
     @property
     def allowed(self) -> bool:

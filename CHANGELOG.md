@@ -5,7 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-01
+
 ### Added
+- **Authorization receipts**: every allowed decision returns a signed, 60-second, single-use receipt
+  bound to the tool and a hash of its arguments. `agentwarden.receipts.ReceiptVerifier` lets tools
+  refuse calls that skipped AgentWarden or changed arguments; the SDK (`pass_receipt=True`) and MCP
+  proxy (`_meta["agentwarden/receipt"]`) deliver receipts automatically.
+- **Rate limiting**: per-IP limits on the API with stricter limits on credential endpoints, a lockout
+  after repeated failed sign-ins, and per-agent limits on authorization; `429` with `Retry-After`.
+  The SDK raises `RateLimitedError`.
+- **One-time ID tokens**: each ID token can be exchanged once, enforced in the database across
+  instances; a failed exchange doesn't consume the sign-in.
 - **Approver console** at `/console`: approvers sign in with an API key or ID token, see each pending
   request with the user's original prompt, risk signals and evidence, redacted arguments, the agent
   chain and context sources, and approve or deny with a note. It never renders data as HTML, runs

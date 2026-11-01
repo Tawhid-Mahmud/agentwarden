@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agentwarden.errors import AgentWardenError, ConfigurationError
 from agentwarden.models import Decision
+from agentwarden.receipts import MCP_META_KEY as RECEIPT_META_KEY
 from agentwarden.sdk.client import _WardenBase
 
 log = logging.getLogger(__name__)
@@ -181,7 +182,11 @@ class McpProxy:
         if result.decision is Decision.ALLOW:
             self._approvals.pop(fingerprint, None)
             self._pending_calls[_id_key(request_id)] = name
-            return Route("upstream")
+            if not result.receipt:
+                return Route("upstream")
+            # Servers that verify receipts can refuse calls that didn't go through AgentWarden.
+            forwarded_params = {**params, "_meta": {**meta, RECEIPT_META_KEY: result.receipt}}
+            return Route("upstream", {**message, "params": forwarded_params})
         if result.decision is Decision.REQUIRE_APPROVAL and result.approval_id:
             self._approvals[fingerprint] = result.approval_id
             return Route(
