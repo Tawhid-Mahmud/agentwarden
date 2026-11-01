@@ -57,7 +57,12 @@ def test_secrets_are_redacted_before_storage(audit: AuditLog, db: Database) -> N
         ("UPDATE audit_log SET data = '{\"i\": 99}' WHERE seq = 3", "does not match its hash"),
         ("UPDATE audit_log SET decision = 'deny' WHERE seq = 3", "does not match its hash"),
         ("DELETE FROM audit_log WHERE seq = 3", "missing entry 3"),
-        ("UPDATE audit_log SET prev_hash = 'f' || substr(prev_hash, 2) WHERE seq = 3", "prev_hash"),
+        (
+            # Flip the first hex digit (deterministically different from the original).
+            "UPDATE audit_log SET prev_hash = CASE WHEN substr(prev_hash, 1, 1) = 'f'"
+            " THEN '0' ELSE 'f' END || substr(prev_hash, 2) WHERE seq = 3",
+            "prev_hash",
+        ),
     ],
 )
 def test_tampering_is_detected(audit: AuditLog, db: Database, tamper: str, reason: str) -> None:

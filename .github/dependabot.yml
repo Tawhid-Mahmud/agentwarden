@@ -1,11 +1,20 @@
 version: 2
 updates:
+  # AgentWarden is a library with ">=" ranges: only touch them when a new release falls
+  # outside the allowed range, and batch the rest into a single weekly PR.
   - package-ecosystem: pip
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 5
+    versioning-strategy: increase-if-necessary
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+    open-pull-requests-limit: 3
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
