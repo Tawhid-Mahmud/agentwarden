@@ -53,6 +53,8 @@ dev = [
   "bandit>=1.7",
   "types-PyYAML>=6.0",
   "psycopg[binary]>=3.2",
+  # Starlette's TestClient prefers httpx2 and warns (an error under -W error) without it.
+  "httpx2>=2.0",
 ]
 
 [project.scripts]
