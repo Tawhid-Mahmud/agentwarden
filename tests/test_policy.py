@@ -245,7 +245,7 @@ def test_targets_use_globs() -> None:
 def test_default_policy_loads() -> None:
     policy = PolicyEngine.from_file(DEFAULT_POLICY_PATH).policy
     assert policy.default_effect == "deny"
-    assert any(r.id == "deny-tainted-external-destination" for r in policy.rules)
+    assert any(r.id == "deny-hijacked-exfiltration" for r in policy.rules)
 
 
 def test_default_policy_suite_passes() -> None:

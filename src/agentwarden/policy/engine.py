@@ -46,7 +46,7 @@ def base_context() -> dict[str, Any]:
         "delegation": {"depth": 0},
         "tool": {"name": None, "scope": None, "risk": None, "side_effect": None},
         "args": {},
-        "risk": {"score": 0.0, "level": "low", "signals": []},
+        "risk": {"score": 0.0, "level": "low", "signals": [], "detectors": []},
         "facts": {
             "recipients": [],
             "external_recipients": [],

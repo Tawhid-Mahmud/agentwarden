@@ -49,16 +49,39 @@ cases:
     expect: require_approval
     expect_rules: [approve-external-email]
 
-  - name: destination taken from untrusted content is denied
+  - name: injected exfiltration to a tainted destination is denied
     input:
       agent: { id: inbox-assistant, trust_tier: standard }
       tool: { name: send_email, risk: high, side_effect: external }
       facts:
         recipients: [audit@evil-corp.example]
         external_recipients: [audit@evil-corp.example]
-      risk: { score: 0.7, signals: [tainted_external_destination, external_recipient] }
+      risk:
+        score: 0.8
+        signals: [tainted_external_destination, instruction_override, external_recipient]
+        detectors: [taint, injection, exfiltration]
     expect: deny
-    expect_rules: [deny-tainted-external-destination]
+    expect_rules: [deny-hijacked-exfiltration]
+
+  - name: an LLM-judge verdict also counts as injection evidence
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts: { recipients: [x@evil.example], external_recipients: [x@evil.example] }
+      risk: { score: 0.8, signals: [tainted_external_destination, llm_injection_verdict], detectors: [taint, llm_judge] }
+    expect: deny
+    expect_rules: [deny-hijacked-exfiltration]
+
+  - name: a tainted destination without injection evidence needs approval
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts:
+        recipients: [dana@vendor.example]
+        external_recipients: [dana@vendor.example]
+      risk: { score: 0.775, signals: [tainted_external_destination, external_recipient], detectors: [taint, exfiltration] }
+    expect: require_approval
+    expect_rules: [approve-tainted-destination, approve-external-email]
 
   - name: secrets never leave the organization
     input:

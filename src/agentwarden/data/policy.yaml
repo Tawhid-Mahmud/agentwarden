@@ -19,14 +19,18 @@ rules:
     when:
       - { field: risk.score, op: gte, value: 0.85 }
 
-  - id: deny-tainted-external-destination
+  - id: deny-hijacked-exfiltration
     description: >-
-      An outbound destination (recipient, URL or domain) came from untrusted content rather
-      than from the user. This is the signature of an injected exfiltration attempt.
+      An outbound destination (recipient, URL or domain) came from untrusted content that also
+      contains instructions aimed at the model. This is the signature of an injected
+      exfiltration attempt.
     effect: deny
     when:
       - { field: tool.side_effect, op: eq, value: external }
       - { field: risk.signals, op: contains, value: tainted_external_destination }
+      - any:
+          - { field: risk.detectors, op: contains, value: injection }
+          - { field: risk.detectors, op: contains, value: llm_judge }
 
   - id: deny-secret-exfiltration
     description: Credentials or keys must never be sent outside the organization.
@@ -111,6 +115,14 @@ rules:
     when:
       - { field: args.method, op: in, value: [POST, PUT, PATCH, DELETE] }
       - { field: facts.external_domains, op: empty, value: false }
+
+  - id: approve-tainted-destination
+    description: >-
+      The destination came from content the agent read, not from the user (for example
+      "reply to the sender"). A human confirms it.
+    effect: require_approval
+    when:
+      - { field: risk.signals, op: contains, value: tainted_external_destination }
 
   - id: approve-elevated-risk
     description: Elevated risk score; ask a human before doing anything with side effects.
