@@ -51,6 +51,8 @@ long-lived API key. Three things go wrong:
   also expose truncation.
 - **Least-privilege analyzer**: unused or wildcard scopes, dormant agents, deny-rate spikes and
   injection exposure, reported as Markdown or JSON.
+- **OIDC sign-in**: users authenticate with your identity provider and exchange the ID token for an
+  agent token (RFC 8693 token exchange).
 - **MCP proxy mode**: enforce every decision on any stdio MCP server, with no agent changes.
 - **Interfaces**: REST API (FastAPI), Python SDK with a `@guard` decorator, CLI, Docker.
 
@@ -179,7 +181,37 @@ except AccessDenied as denied:
 
 See [`examples/guarded_agent.py`](examples/guarded_agent.py) for a runnable version.
 
-### 4. Put any MCP server behind AgentWarden
+### 4. Sign in with your identity provider (OIDC)
+
+The demo API keys are a stand-in. In a real deployment, users sign in with your organization's
+identity provider (Google, Okta, Microsoft Entra, Keycloak…) and exchange the ID token for an
+agent token using **OAuth 2.0 Token Exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693))**.
+AgentWarden never sees a password.
+
+```bash
+export AGENTWARDEN_OIDC_ISSUER=https://accounts.google.com     # your IdP
+export AGENTWARDEN_OIDC_AUDIENCE=<your OAuth client id>
+export AGENTWARDEN_API_KEYS=false                                # turn off the demo keys
+agentwarden serve
+```
+
+```bash
+curl -s localhost:8000/v1/token/exchange \
+  -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  -d subject_token_type=urn:ietf:params:oauth:token-type:id_token \
+  --data-urlencode "subject_token=$ID_TOKEN" \
+  -d audience=agent:inbox-assistant \
+  --data-urlencode "scope=email:read email:send"
+```
+
+Users are matched by **verified** email (`email` in `directory.yaml`), or by `sub` with
+`AGENTWARDEN_OIDC_USER_CLAIM=sub`. ID tokens are checked strictly: asymmetric algorithms only,
+exact issuer, audience and `azp`, expiry, and keys from the IdP's JWKS with automatic rotation.
+Approvers can also sign in with `Authorization: Bearer <ID token>`. To try it without a real IdP,
+run the throwaway [`examples/dev_idp.py`](examples/dev_idp.py) (development only) and point
+`AGENTWARDEN_OIDC_ISSUER` at `http://127.0.0.1:9000`.
+
+### 5. Put any MCP server behind AgentWarden
 
 `agentwarden mcp-proxy` wraps a stdio [MCP](https://modelcontextprotocol.io) server. The agent's
 MCP client launches the proxy instead of the server, and every `tools/call` is authorized before
@@ -274,7 +306,7 @@ src/agentwarden/
 ## Status & limitations
 
 v0.1 is a working MVP for learning, demos and evaluation, and has **not been hardened for
-production**. Single-node SQLite, demo API keys instead of OIDC, one signing key and no rate
+production**. Single-node SQLite, one signing key and no rate
 limiting. All of these are on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
 evaded; see the [threat model](docs/THREAT_MODEL.md) for what is and isn't covered. Report
 security issues as described in [SECURITY.md](SECURITY.md).

@@ -34,6 +34,7 @@ from agentwarden.identity import (
     TokenClaims,
     TokenService,
 )
+from agentwarden.identity.oidc import OidcVerifier
 from agentwarden.identity.scopes import covered_by_any
 from agentwarden.models import (
     Agent,
@@ -85,6 +86,7 @@ class Gateway:
         approvals: ApprovalQueue,
         audit: AuditLog,
         clock: Callable[[], float] = time.time,
+        oidc: OidcVerifier | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -97,6 +99,7 @@ class Gateway:
         self.risk = risk
         self.approvals = approvals
         self.audit = audit
+        self.oidc = oidc
         self._clock = clock
 
     @classmethod
@@ -106,6 +109,7 @@ class Gateway:
         *,
         clock: Callable[[], float] = time.time,
         extra_detectors: Sequence[Detector] = (),
+        oidc: OidcVerifier | None = None,
     ) -> Gateway:
         """Wire up a gateway from settings (defaults: environment variables)."""
         settings = settings or Settings.from_env()
@@ -133,6 +137,19 @@ class Gateway:
             risk=RiskEngine.default(activity=audit, clock=clock, extra=detectors),
             approvals=ApprovalQueue(db, ttl=settings.approval_ttl, clock=clock),
             audit=audit,
+            clock=clock,
+            oidc=oidc or cls._oidc_from(settings, clock),
+        )
+
+    @staticmethod
+    def _oidc_from(settings: Settings, clock: Callable[[], float]) -> OidcVerifier | None:
+        if not settings.oidc_issuer or not settings.oidc_audience:
+            return None
+        return OidcVerifier(
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url,
+            clock_skew=settings.clock_skew_seconds,
             clock=clock,
         )
 
@@ -175,6 +192,45 @@ class Gateway:
                 "task": request.task,
                 "expires_at": issued.expires_at.isoformat(),
             },
+        )
+        return issued
+
+    def authenticate_identity(self, id_token: str) -> User:
+        """Resolve an IdP ID token to a directory user (OIDC sign-in)."""
+        if self.oidc is None:
+            raise AuthenticationError(
+                "OIDC sign-in is not configured (set AGENTWARDEN_OIDC_ISSUER)"
+            )
+        claim = self.settings.oidc_user_claim
+        try:
+            identity = self.oidc.verify(id_token, require_verified_email=claim == "email")
+        except AuthenticationError as exc:
+            self.audit.append("auth.failed", data={"reason": str(exc), "operation": "oidc"})
+            raise
+        value = identity.email if claim == "email" else identity.subject
+        user = self.directory.find_by_identity(claim=claim, value=value)
+        if user is None:
+            self.audit.append(
+                "auth.failed",
+                data={
+                    "reason": "no directory user for this identity",
+                    "operation": "oidc",
+                    "issuer": identity.issuer,
+                    "subject": identity.subject,
+                },
+            )
+            raise AuthenticationError("signed in, but this identity has no AgentWarden user")
+        return user
+
+    def exchange_token(self, id_token: str, request: TokenRequest) -> IssuedToken:
+        """RFC 8693 token exchange: an IdP ID token becomes a scoped agent token."""
+        user = self.authenticate_identity(id_token)
+        issued = self.issue_token(user, request)
+        self.audit.append(
+            "token.exchanged",
+            user_id=user.id,
+            agent_id=request.agent_id,
+            data={"jti": issued.jti, "idp": self.oidc.issuer if self.oidc else None},
         )
         return issued
 

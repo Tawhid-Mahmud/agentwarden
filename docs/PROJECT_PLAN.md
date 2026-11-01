@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| **Status** | v0.1.0 (MVP) delivered · v0.2 in progress (MCP proxy mode built) |
+| **Status** | v0.1.0 (MVP) delivered · v0.2 in progress (MCP proxy mode and OIDC sign-in built) |
 | **Owner** | Mohammad Tawhid Mahmud |
 | **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite |
 | **License** | MIT |
@@ -159,7 +159,7 @@ gantt
 | Version | Item | Why it matters |
 |---|---|---|
 | v0.2 ✅ | **MCP proxy mode**: a transparent proxy in front of MCP servers that authorizes every `tools/call` | MCP is becoming the default way agents reach tools, and it needs a central enforcement point. **Built:** `agentwarden mcp-proxy` |
-| v0.2 | **OIDC token exchange**: accept an IdP-issued ID/access token as `subject_token` | Replaces demo API keys; real user identity and group claims |
+| v0.2 ✅ | **OIDC token exchange**: accept an IdP-issued ID token as `subject_token` | Replaces demo API keys with real user identity. **Built:** `POST /v1/token/exchange` (RFC 8693) |
 | v0.2 | **Key rotation**: multiple active keys, `kid` selection, scheduled rotation | Limits blast radius of key compromise |
 | v0.2 | **Postgres backend** | Multi-instance deployments |
 | v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |

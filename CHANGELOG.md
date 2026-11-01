@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **OIDC sign-in and RFC 8693 token exchange** (`POST /v1/token/exchange`): users exchange an ID
+  token from their identity provider for a scoped agent token. Verification accepts asymmetric
+  algorithms only, checks issuer, audience, `azp` and expiry, discovers and rotates IdP keys (with a
+  rate-limited refresh), and requires a verified email when matching users by email. Approvers can
+  sign in with an ID token too, and the demo API keys can be turned off (`AGENTWARDEN_API_KEYS=false`).
+  Includes `examples/dev_idp.py`, a throwaway local IdP for trying it out.
 - **MCP proxy mode** (`agentwarden mcp-proxy -- <server command>`): wraps any stdio MCP server and
   authorizes every `tools/call`. Denied and pending calls never reach the server and come back as
   MCP tool errors that explain why. Approvals work without client support (retry the same call once

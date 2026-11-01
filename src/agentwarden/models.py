@@ -77,6 +77,10 @@ class User(BaseModel):
     name: str = ""
     roles: list[str] = Field(default_factory=list)
     entitlements: list[str] = Field(default_factory=list)
+    #: Matched against the IdP's verified ``email`` claim (OIDC sign-in).
+    email: str | None = None
+    #: Matched against the IdP's ``sub`` claim when ``oidc_user_claim`` is "sub".
+    oidc_subject: str | None = None
     api_key_sha256: str | None = Field(default=None, exclude=True, repr=False)
 
 

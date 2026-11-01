@@ -43,6 +43,16 @@ class Settings:
     admin_key: str | None = field(default=None, repr=False)
     llm_judge_enabled: bool = False
     llm_judge_model: str = DEFAULT_LLM_JUDGE_MODEL
+    #: OpenID Connect issuer URL (e.g. https://accounts.google.com). Enables token exchange.
+    oidc_issuer: str | None = None
+    #: The OAuth client id AgentWarden is registered under at the IdP (the ID token audience).
+    oidc_audience: str | None = None
+    #: Override the JWKS URL instead of discovering it from the issuer.
+    oidc_jwks_url: str | None = None
+    #: How IdP identities map to directory users: "email" (verified email) or "sub".
+    oidc_user_claim: str = "email"
+    #: Demo-grade X-API-Key user authentication. Turn off once OIDC is configured.
+    api_keys_enabled: bool = True
 
     def __post_init__(self) -> None:
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
@@ -55,6 +65,12 @@ class Settings:
             raise ConfigurationError("approval_ttl must be at least 30 seconds")
         if self.admin_key is not None and len(self.admin_key) < 16:
             raise ConfigurationError("admin_key must be at least 16 characters")
+        if self.oidc_issuer and not self.oidc_audience:
+            raise ConfigurationError("oidc_audience (the client id) is required with oidc_issuer")
+        if self.oidc_user_claim not in ("email", "sub"):
+            raise ConfigurationError("oidc_user_claim must be 'email' or 'sub'")
+        if not self.api_keys_enabled and not self.oidc_issuer:
+            raise ConfigurationError("disabling API keys requires OIDC, or no user could sign in")
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -91,4 +107,9 @@ class Settings:
             admin_key=get("ADMIN_KEY"),
             llm_judge_enabled=(get("LLM_JUDGE") or "").lower() in _TRUE,
             llm_judge_model=get("LLM_JUDGE_MODEL") or base.llm_judge_model,
+            oidc_issuer=get("OIDC_ISSUER"),
+            oidc_audience=get("OIDC_AUDIENCE"),
+            oidc_jwks_url=get("OIDC_JWKS_URL"),
+            oidc_user_claim=get("OIDC_USER_CLAIM") or base.oidc_user_claim,
+            api_keys_enabled=(get("API_KEYS") or "true").lower() in _TRUE,
         )

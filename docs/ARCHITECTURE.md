@@ -66,7 +66,7 @@ flowchart TB
 
 | Principal | Represented as | Authenticates with |
 |---|---|---|
-| Human user | `User` in the directory (roles, entitlements) | API key hash (demo stand-in for OIDC, v0.2) |
+| Human user | `User` in the directory (roles, entitlements, email / IdP subject) | IdP ID token via OIDC and RFC 8693 token exchange; demo API keys optional |
 | Agent | `Agent` in the registry (owner, trust tier, scope ceiling, enabled) | Delegated JWT |
 | Admin | n/a | `X-Admin-Key` shared secret (constant-time compare) |
 

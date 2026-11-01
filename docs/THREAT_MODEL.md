@@ -63,7 +63,7 @@ identity, delegated scopes, policy, provenance and human approval.
 | Boundary / threat | Mitigation in v0.1 | Residual risk / roadmap |
 |---|---|---|
 | **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Bearer tokens can be replayed until expiry → **DPoP sender-constrained tokens (v0.3)**; short TTLs (15 min default) limit the window |
-| **S**poofing: impersonating a user to mint tokens | API keys stored as SHA-256 hashes, constant-time comparison | Demo-grade user auth → **OIDC token exchange (v0.2)** |
+| **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | An ID token can be replayed into token exchange until it expires; one-time use (`jti` tracking) is a candidate hardening |
 | **T**ampering: changing token claims | Signature covers all claims | n/a |
 | **T**ampering: changing approved arguments (A2) | Approval bound to `sha256(user, actor chain, tool, args)`; mismatch → deny + `approval.misuse` event | n/a |
 | **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain → export checkpoints to WORM storage or a SIEM (v0.3) |

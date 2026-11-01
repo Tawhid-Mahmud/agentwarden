@@ -11,13 +11,15 @@ Authentication schemes:
 from __future__ import annotations
 
 import hmac
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
+from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from agentwarden import __version__
 from agentwarden.approvals import APPROVER_ROLE, ApprovalRequest, ApprovalStatus
@@ -72,6 +74,30 @@ class RevokeBody(BaseModel):
     reason: str = Field(default="", max_length=500)
 
 
+# OAuth URNs from RFC 8693, not secrets.
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105  # nosec B105
+ISSUED_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"  # noqa: S105  # nosec B105
+SUBJECT_TOKEN_TYPES = {
+    "urn:ietf:params:oauth:token-type:id_token",
+    "urn:ietf:params:oauth:token-type:jwt",
+}
+
+
+async def _read_params(request: Request) -> dict[str, str]:
+    """Read a form-encoded or JSON body into single-valued string parameters."""
+    body = await request.body()
+    if len(body) > 64 * 1024:
+        return {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            data = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=False)
+    return {k: v[0] for k, v in parsed.items() if v}
+
+
 def _error_status(exc: AgentWardenError) -> int:
     for cls in type(exc).__mro__:
         if cls in _STATUS:
@@ -97,12 +123,24 @@ def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
 
 
 def current_user(
-    gateway: GatewayDep, x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None
+    gateway: GatewayDep,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    user = gateway.directory.authenticate_api_key(x_api_key or "")
-    if user is None:
-        raise AuthenticationError("missing or invalid X-API-Key")
-    return user
+    """A human user: an IdP ID token (``Authorization: Bearer``) or, if enabled, an API key."""
+    if authorization and gateway.oidc is not None:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token.strip():
+            return gateway.authenticate_identity(token.strip())
+    if x_api_key and gateway.settings.api_keys_enabled:
+        user = gateway.directory.authenticate_api_key(x_api_key)
+        if user is not None:
+            return user
+    accepted = [
+        *(["Authorization: Bearer <ID token>"] if gateway.oidc is not None else []),
+        *(["X-API-Key"] if gateway.settings.api_keys_enabled else []),
+    ]
+    raise AuthenticationError(f"sign in with {' or '.join(accepted)}")
 
 
 def require_admin(
@@ -186,6 +224,72 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         """A user delegates scoped, short-lived authority to one of their agents."""
         response.headers.update(_NO_STORE)
         return gateway.issue_token(user, body)
+
+    @app.post("/v1/token/exchange", tags=["tokens"], response_model=None)
+    async def token_exchange(request: Request, gateway: GatewayDep) -> JSONResponse:
+        """RFC 8693 token exchange: trade an IdP ID token for a scoped agent token.
+
+        Form-encoded (standard) or JSON. Parameters: ``grant_type`` (token-exchange),
+        ``subject_token`` (the ID token), ``subject_token_type`` (id_token or jwt),
+        ``scope`` (space-separated) and the agent as ``audience=agent:<id>`` or ``agent_id``.
+        Optional: ``task``, ``ttl_seconds``.
+        """
+        params = await _read_params(request)
+
+        def oauth_error(error: str, description: str, status: int = 400) -> JSONResponse:
+            return JSONResponse(
+                {"error": error, "error_description": description},
+                status_code=status,
+                headers=_NO_STORE,
+            )
+
+        if params.get("grant_type") != TOKEN_EXCHANGE_GRANT:
+            return oauth_error(
+                "unsupported_grant_type", f"grant_type must be {TOKEN_EXCHANGE_GRANT}"
+            )
+        if params.get("subject_token_type") not in SUBJECT_TOKEN_TYPES:
+            return oauth_error("invalid_request", "subject_token_type must be an id_token or jwt")
+        subject_token = params.get("subject_token")
+        if not subject_token:
+            return oauth_error("invalid_request", "subject_token is required")
+        audience = params.get("audience", "")
+        agent_id = params.get("agent_id") or (
+            audience.removeprefix("agent:") if audience.startswith("agent:") else ""
+        )
+        scopes = params.get("scope", "").split()
+        if not agent_id:
+            return oauth_error(
+                "invalid_target", "name the agent with audience=agent:<id> or agent_id"
+            )
+        if not scopes:
+            return oauth_error("invalid_scope", "request at least one scope")
+        try:
+            ttl = int(params["ttl_seconds"]) if params.get("ttl_seconds") else None
+            token_request = TokenRequest(
+                agent_id=agent_id, scopes=scopes, task=params.get("task"), ttl_seconds=ttl
+            )
+        except (ValueError, ValidationError) as exc:
+            return oauth_error("invalid_request", str(exc).splitlines()[0])
+        try:
+            issued = gateway.exchange_token(subject_token, token_request)
+        except AuthenticationError as exc:
+            return oauth_error("invalid_grant", str(exc))
+        except NotFoundError as exc:
+            return oauth_error("invalid_target", str(exc))
+        except (PermissionDeniedError, InvalidRequestError) as exc:
+            return oauth_error("invalid_scope", str(exc))
+        return JSONResponse(
+            {
+                "access_token": issued.access_token,
+                "issued_token_type": ISSUED_TOKEN_TYPE,
+                "token_type": "Bearer",  # nosec B105 - OAuth token type, not a secret
+                "expires_in": issued.expires_in,
+                "scope": " ".join(issued.scope),
+                "denied_scopes": issued.denied_scopes,
+                "actor_chain": issued.actor_chain,
+            },
+            headers=_NO_STORE,
+        )
 
     @app.post("/v1/tokens/delegate", tags=["tokens"])
     def delegate(
