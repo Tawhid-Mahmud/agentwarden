@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, types & tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev,llm]"
+      - name: Ruff
+        run: |
+          ruff check src tests scripts
+          ruff format --check src tests scripts
+      - name: Mypy (strict)
+        run: mypy
+      - name: Pytest
+        run: pytest -W error --cov --cov-report=term-missing --cov-fail-under=90
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e ".[dev]" pip-audit
+      - name: Hidden / bidirectional characters (Trojan Source)
+        run: python scripts/check_hidden_chars.py
+      - name: Bandit (SAST)
+        run: bandit -r src -c pyproject.toml
+      - name: Dependency vulnerabilities (advisory)
+        run: pip-audit --skip-editable
+        continue-on-error: true
+
+  policy-and-detection:
+    name: Policy tests, detection quality gate & demo
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -e .
+      - name: Validate policy
+        run: agentwarden policy validate
+      - name: Policy-as-code tests
+        run: agentwarden policy test tests/policy/default_policy_cases.yaml
+      - name: Injection detection quality gate
+        run: agentwarden eval --min-recall 0.9 --max-fpr 0.1
+      - name: End-to-end attack demo
+        run: agentwarden demo --no-color
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t agentwarden:ci .
+      - name: Smoke test
+        run: |
+          docker run --rm agentwarden:ci agentwarden version
+          docker run -d --name aw -p 8000:8000 agentwarden:ci
+          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:8000/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:8000/.well-known/jwks.json
+          docker rm -f aw
