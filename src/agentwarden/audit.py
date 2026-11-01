@@ -114,7 +114,8 @@ class AuditLog:
     ) -> AuditEvent:
         payload = canonical_json(redact_obj(data or {}))
         ts = _iso(self._clock())
-        with self._db.transaction() as conn:
+        # The named lock serializes appends across AgentWarden instances sharing a database.
+        with self._db.transaction(lock="audit_log") as conn:
             last = conn.execute(
                 "SELECT seq, hash FROM audit_log ORDER BY seq DESC LIMIT 1"
             ).fetchone()
@@ -243,9 +244,11 @@ class AuditLog:
         since_iso = _iso(since) if since is not None else None
         rows = self._db.query(
             "SELECT * FROM audit_log"
-            " WHERE (? IS NULL OR agent_id = ?) AND (? IS NULL OR user_id = ?)"
-            " AND (? IS NULL OR event_type = ?) AND (? IS NULL OR decision = ?)"
-            " AND (? IS NULL OR ts >= ?)"
+            " WHERE (CAST(? AS TEXT) IS NULL OR agent_id = ?)"
+            " AND (CAST(? AS TEXT) IS NULL OR user_id = ?)"
+            " AND (CAST(? AS TEXT) IS NULL OR event_type = ?)"
+            " AND (CAST(? AS TEXT) IS NULL OR decision = ?)"
+            " AND (CAST(? AS TEXT) IS NULL OR ts >= ?)"
             " ORDER BY seq DESC LIMIT ?",
             (
                 agent_id, agent_id, user_id, user_id, event_type, event_type,

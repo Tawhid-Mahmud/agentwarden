@@ -40,6 +40,7 @@ deployment without rate limiting (a known gap).
 - [ ] Configure OIDC (`AGENTWARDEN_OIDC_ISSUER`, `AGENTWARDEN_OIDC_AUDIENCE`) and set `AGENTWARDEN_API_KEYS=false`
 - [ ] Replace the demo directory: no demo API keys, your own users, tools and trusted domains
 - [ ] Terminate TLS in front of the service; never expose it on plain HTTP
+- [ ] With PostgreSQL, use a dedicated database user and TLS (`?sslmode=verify-full` in `AGENTWARDEN_DATABASE_URL`)
 - [ ] Keep token TTLs short (`AGENTWARDEN_DEFAULT_TOKEN_TTL`, default 900s)
 - [ ] Export signed audit checkpoints (`GET /v1/audit/checkpoint`) to storage the service can't modify
 - [ ] Run `agentwarden policy test` for your policy in CI

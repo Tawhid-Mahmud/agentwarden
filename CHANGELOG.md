@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **PostgreSQL backend** (`AGENTWARDEN_DATABASE_URL`, `pip install 'agentwarden[postgres]'`): several
+  AgentWarden instances can share tokens, revocations, the kill switch, approvals and the audit chain.
+  Audit appends and schema creation are serialized across instances with advisory locks; approval
+  consumption stays single-use under races. The storage test suite runs on both SQLite and Postgres,
+  and CI has a Postgres 16 job. `docker-compose.ha.yml` runs two instances on one database.
 - **Signing-key rotation**: a key ring (`AGENTWARDEN_SIGNING_KEY_DIR`) with one active key, retired
   keys that keep verifying tokens for one maximum token lifetime, and pruning that deletes retired
   private keys while keeping their public halves for audit checkpoints. The JWKS publishes every key

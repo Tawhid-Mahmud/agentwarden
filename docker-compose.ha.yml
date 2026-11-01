@@ -1,0 +1,48 @@
+# Two AgentWarden instances sharing one PostgreSQL database and one signing-key ring.
+# Put a load balancer in front of ports 8001 and 8002 for a highly available setup.
+#
+#   export AGENTWARDEN_ADMIN_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+#   export POSTGRES_PASSWORD=$(python -c "import secrets; print(secrets.token_urlsafe(24))")
+#   docker compose -f docker-compose.ha.yml up --build
+x-agentwarden: &agentwarden
+  build: .
+  image: agentwarden:local
+  environment:
+    AGENTWARDEN_ADMIN_KEY: ${AGENTWARDEN_ADMIN_KEY:?set AGENTWARDEN_ADMIN_KEY}
+    AGENTWARDEN_DATABASE_URL: postgresql://agentwarden:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/agentwarden
+    AGENTWARDEN_SIGNING_KEY_DIR: /keys
+  volumes:
+    - agentwarden-keys:/keys   # shared, so a rotation on one instance reaches the other
+  depends_on:
+    postgres:
+      condition: service_healthy
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: agentwarden
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: agentwarden
+    volumes:
+      - agentwarden-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentwarden"]
+      interval: 5s
+      retries: 10
+
+  agentwarden-1:
+    <<: *agentwarden
+    ports: ["127.0.0.1:8001:8000"]
+
+  agentwarden-2:
+    <<: *agentwarden
+    ports: ["127.0.0.1:8002:8000"]
+
+volumes:
+  agentwarden-db:
+  agentwarden-keys:

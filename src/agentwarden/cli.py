@@ -151,7 +151,7 @@ def cmd_audit_verify(args: argparse.Namespace) -> int:
     from agentwarden.audit import AuditLog
     from agentwarden.storage import Database
 
-    db = Database(_settings(args).db_path)
+    db = Database(_settings(args).database)
     try:
         result = AuditLog(db).verify()
     finally:

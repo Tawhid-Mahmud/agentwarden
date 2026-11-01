@@ -1,19 +1,29 @@
-"""SQLite persistence shared by the registry, revocation list, approval queue and audit log.
+"""Persistence for the registry, revocation list, approval queue and audit log.
 
-A single connection guarded by a re-entrant lock keeps the implementation simple and safe for
-FastAPI's thread pool. The storage surface is intentionally small so a Postgres backend can be
-added later (roadmap v0.2).
+Two backends share one small interface:
+
+* **SQLite** (default): ``Database("agentwarden.db")`` or ``Database(":memory:")``. One process.
+* **PostgreSQL**: ``Database("postgresql://user:pass@host/db")``. Several AgentWarden instances
+  can share one database. Requires ``pip install 'agentwarden[postgres]'``.
+
+Callers write SQL with ``?`` placeholders in the common SQLite/PostgreSQL dialect; the Postgres
+backend translates placeholders. Writes that must be serialized across instances (appending to
+the audit hash chain, creating the schema) take a named lock: ``BEGIN IMMEDIATE`` on SQLite, a
+transaction-scoped advisory lock on PostgreSQL.
 """
 
 from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Iterator, Sequence
+import zlib
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Protocol
 
-SCHEMA = """
+from agentwarden.errors import ConfigurationError
+
+_TABLES = """
 CREATE TABLE IF NOT EXISTS agents (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
@@ -28,7 +38,7 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE TABLE IF NOT EXISTS revoked_tokens (
     jti        TEXT PRIMARY KEY,
-    expires_at REAL NOT NULL,
+    expires_at {real} NOT NULL,
     revoked_at TEXT NOT NULL,
     reason     TEXT NOT NULL DEFAULT ''
 );
@@ -36,7 +46,7 @@ CREATE TABLE IF NOT EXISTS revoked_tokens (
 -- "Revoke every token for this subject issued at or before not_before".
 CREATE TABLE IF NOT EXISTS subject_revocations (
     subject    TEXT PRIMARY KEY,
-    not_before REAL NOT NULL,
+    not_before {real} NOT NULL,
     reason     TEXT NOT NULL DEFAULT ''
 );
 
@@ -50,17 +60,17 @@ CREATE TABLE IF NOT EXISTS approvals (
     call_hash    TEXT NOT NULL,
     args_preview TEXT NOT NULL,
     reasons      TEXT NOT NULL,
-    risk_score   REAL NOT NULL,
-    created_at   REAL NOT NULL,
-    expires_at   REAL NOT NULL,
+    risk_score   {real} NOT NULL,
+    created_at   {real} NOT NULL,
+    expires_at   {real} NOT NULL,
     reviewer     TEXT,
-    reviewed_at  REAL,
+    reviewed_at  {real},
     note         TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 
 CREATE TABLE IF NOT EXISTS audit_log (
-    seq        INTEGER PRIMARY KEY,
+    seq        {bigint} PRIMARY KEY,
     ts         TEXT NOT NULL,
     event_type TEXT NOT NULL,
     user_id    TEXT,
@@ -74,24 +84,81 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS idx_audit_agent_ts ON audit_log(agent_id, ts);
 """
 
+#: Kept for compatibility: the SQLite flavor of the schema.
+SCHEMA = _TABLES.format(real="REAL", bigint="INTEGER")
+POSTGRES_SCHEMA = _TABLES.format(real="DOUBLE PRECISION", bigint="BIGINT")
+TABLES = ("agents", "revoked_tokens", "subject_revocations", "approvals", "audit_log")
+
+Row = Mapping[str, Any]
+
+
+class Cursor(Protocol):
+    rowcount: int
+
+    def fetchone(self) -> Any: ...
+
+    def fetchall(self) -> list[Any]: ...
+
+
+class Transaction(Protocol):
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor: ...
+
+
+def is_postgres_url(target: str) -> bool:
+    return target.startswith(("postgresql://", "postgres://"))
+
 
 class Database:
-    """Thread-safe wrapper around one SQLite connection."""
+    """Storage interface. ``Database(target)`` opens the backend ``target`` points at."""
 
-    def __init__(self, path: str = ":memory:") -> None:
-        self.path = path
+    dialect: str = "abstract"
+    #: Exception raised for unique-key violations by this backend.
+    IntegrityError: type[Exception] = Exception
+
+    def __new__(cls, target: str = ":memory:") -> Database:
+        if cls is Database:
+            backend: type[Database] = (
+                PostgresDatabase if is_postgres_url(target) else SQLiteDatabase
+            )
+            return super().__new__(backend)
+        return super().__new__(cls)
+
+    def transaction(self, lock: str | None = None) -> Any:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> int:  # pragma: no cover
+        raise NotImplementedError
+
+    def query(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:  # pragma: no cover
+        raise NotImplementedError
+
+    def query_one(self, sql: str, params: Sequence[Any] = ()) -> Any:  # pragma: no cover
+        raise NotImplementedError
+
+    def close(self) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+
+class SQLiteDatabase(Database):
+    """One SQLite connection behind a re-entrant lock (safe for FastAPI's thread pool)."""
+
+    dialect = "sqlite"
+    IntegrityError = sqlite3.IntegrityError
+
+    def __init__(self, target: str = ":memory:") -> None:
+        self.path = target
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        self._conn = sqlite3.connect(target, check_same_thread=False, isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
-            if path != ":memory:":
+            if target != ":memory:":
                 self._conn.execute("PRAGMA journal_mode = WAL")
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.executescript(SCHEMA)
 
     @contextmanager
-    def transaction(self) -> Iterator[sqlite3.Connection]:
+    def transaction(self, lock: str | None = None) -> Iterator[sqlite3.Connection]:
         """Run statements atomically. ``BEGIN IMMEDIATE`` takes the write lock up front."""
         with self._lock:
             self._conn.execute("BEGIN IMMEDIATE")
@@ -103,7 +170,6 @@ class Database:
             self._conn.execute("COMMIT")
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
-        """Execute a write statement and return the number of affected rows."""
         with self._lock:
             return self._conn.execute(sql, params).rowcount
 
@@ -119,3 +185,85 @@ class Database:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+def _translate(sql: str) -> str:
+    """``?`` placeholders to psycopg's ``%s`` (literal ``%`` escaped first)."""
+    return sql.replace("%", "%%").replace("?", "%s")
+
+
+def _lock_id(name: str) -> int:
+    return zlib.crc32(f"agentwarden:{name}".encode())
+
+
+class _PgTransaction:
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> Cursor:
+        cursor: Cursor = self._conn.execute(_translate(sql), tuple(params))
+        return cursor
+
+
+class PostgresDatabase(Database):
+    """PostgreSQL backend: one connection per AgentWarden process, shared by many processes."""
+
+    dialect = "postgres"
+
+    def __init__(self, target: str) -> None:
+        try:
+            import psycopg
+            from psycopg.rows import dict_row
+        except ImportError as exc:  # pragma: no cover - depends on installed extras
+            raise ConfigurationError(
+                "PostgreSQL support needs psycopg: pip install 'agentwarden[postgres]'"
+            ) from exc
+        self._psycopg = psycopg
+        self._row_factory = dict_row
+        self.IntegrityError = psycopg.errors.IntegrityError
+        self._url = target
+        self._lock = threading.RLock()
+        try:
+            self._conn = self._connect()
+        except psycopg.Error as exc:
+            raise ConfigurationError(f"could not connect to PostgreSQL: {exc}") from exc
+        with self.transaction(lock="schema") as tx:  # instances starting together don't race
+            for statement in POSTGRES_SCHEMA.split(";"):
+                if statement.strip():
+                    tx.execute(statement)
+
+    def _connect(self) -> Any:
+        return self._psycopg.connect(self._url, autocommit=True, row_factory=self._row_factory)
+
+    def _ensure(self) -> Any:
+        if self._conn.closed or self._conn.broken:
+            self._conn = self._connect()
+        return self._conn
+
+    @contextmanager
+    def transaction(self, lock: str | None = None) -> Iterator[_PgTransaction]:
+        with self._lock:
+            conn = self._ensure()
+            with conn.transaction():
+                if lock is not None:
+                    conn.execute("SELECT pg_advisory_xact_lock(%s)", (_lock_id(lock),))
+                yield _PgTransaction(conn)
+
+    def execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        with self._lock:
+            rowcount: int = self._ensure().execute(_translate(sql), tuple(params)).rowcount
+            return rowcount
+
+    def query(self, sql: str, params: Sequence[Any] = ()) -> list[Any]:
+        with self._lock:
+            rows: list[Any] = self._ensure().execute(_translate(sql), tuple(params)).fetchall()
+            return rows
+
+    def query_one(self, sql: str, params: Sequence[Any] = ()) -> Any:
+        with self._lock:
+            return self._ensure().execute(_translate(sql), tuple(params)).fetchone()
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._conn.closed:
+                self._conn.close()

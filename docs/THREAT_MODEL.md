@@ -116,7 +116,7 @@ identity, delegated scopes, policy, provenance and human approval.
   `authorize()` bypasses it. **MCP proxy mode** closes this for MCP tools: the server is only
   reachable through the proxy, which authorizes every `tools/call` and records every result.
   Tools reached outside MCP still need tool-side token validation (roadmap).
-- **SQLite and no rate limiting.** See the roadmap. Rotation limits how long a stolen signing key is
+- **No rate limiting.** See the roadmap. Rotation limits how long a stolen signing key is
   useful, but tokens it signed stay valid until they expire or are revoked.
 - **The optional LLM judge sends untrusted content to a third party** (the Anthropic API) when enabled.
 

@@ -27,6 +27,9 @@ class Settings:
     """
 
     db_path: str = "agentwarden.db"
+    #: PostgreSQL URL (postgresql://user:pass@host/db). Takes precedence over ``db_path`` and
+    #: lets several AgentWarden instances share state.
+    database_url: str | None = field(default=None, repr=False)
     policy_path: Path = DEFAULT_POLICY_PATH
     directory_path: Path = DEFAULT_DIRECTORY_PATH
     #: PEM-encoded Ed25519 private key. ``None`` means an ephemeral in-memory key
@@ -68,6 +71,8 @@ class Settings:
             raise ConfigurationError("approval_ttl must be at least 30 seconds")
         if self.admin_key is not None and len(self.admin_key) < 16:
             raise ConfigurationError("admin_key must be at least 16 characters")
+        if self.database_url and not self.database_url.startswith(("postgresql://", "postgres://")):
+            raise ConfigurationError("database_url must be a postgresql:// URL")
         if self.signing_key_path and self.signing_key_dir:
             raise ConfigurationError("set either signing_key_path or signing_key_dir, not both")
         if self.oidc_issuer and not self.oidc_audience:
@@ -76,6 +81,11 @@ class Settings:
             raise ConfigurationError("oidc_user_claim must be 'email' or 'sub'")
         if not self.api_keys_enabled and not self.oidc_issuer:
             raise ConfigurationError("disabling API keys requires OIDC, or no user could sign in")
+
+    @property
+    def database(self) -> str:
+        """What to open: the PostgreSQL URL if set, otherwise the SQLite path."""
+        return self.database_url or self.db_path
 
     @property
     def key_grace_seconds(self) -> int:
@@ -105,6 +115,7 @@ class Settings:
         return replace(
             base,
             db_path=get("DB_PATH") or base.db_path,
+            database_url=get("DATABASE_URL"),
             policy_path=Path(get("POLICY_PATH") or base.policy_path),
             directory_path=Path(get("DIRECTORY_PATH") or base.directory_path),
             signing_key_path=Path(key_path) if key_path else None,

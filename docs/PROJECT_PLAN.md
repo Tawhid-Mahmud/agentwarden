@@ -7,9 +7,9 @@
 
 | | |
 |---|---|
-| **Status** | v0.1.0 (MVP) delivered · v0.2 in progress (MCP proxy mode, OIDC sign-in and key rotation built) |
+| **Status** | v0.1.0 (MVP) delivered · v0.2 feature-complete (MCP proxy, OIDC sign-in, key rotation, Postgres) |
 | **Owner** | Mohammad Tawhid Mahmud |
-| **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite |
+| **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite or PostgreSQL |
 | **License** | MIT |
 
 ---
@@ -161,7 +161,7 @@ gantt
 | v0.2 ✅ | **MCP proxy mode**: a transparent proxy in front of MCP servers that authorizes every `tools/call` | MCP is becoming the default way agents reach tools, and it needs a central enforcement point. **Built:** `agentwarden mcp-proxy` |
 | v0.2 ✅ | **OIDC token exchange**: accept an IdP-issued ID token as `subject_token` | Replaces demo API keys with real user identity. **Built:** `POST /v1/token/exchange` (RFC 8693) |
 | v0.2 ✅ | **Key rotation**: key ring, `kid` selection, multi-key JWKS, grace periods | Limits blast radius of key compromise. **Built:** `agentwarden keys rotate/list/prune` and admin API |
-| v0.2 | **Postgres backend** | Multi-instance deployments |
+| v0.2 ✅ | **Postgres backend** | Multi-instance deployments. **Built:** `AGENTWARDEN_DATABASE_URL`, shared state across instances, CI on Postgres 16 |
 | v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |
 | v0.3 | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key |
 | v0.3 | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry |
@@ -200,7 +200,7 @@ gantt
 | False positives annoy users | Users bypass the tool | Default policy uses `require_approval` for medium risk and reserves `deny` for high-confidence cases; evidence explains each decision |
 | Signing key compromise | Forged tokens | Short TTLs, `kid`, key files outside the repo, zero-downtime rotation and pruning (built), DPoP (v0.3) |
 | Approval fatigue | Rubber-stamping | Risk evidence in queue, only high-impact actions gated, analyzer reports approval volume |
-| SQLite limits | Single-node only | Storage behind a small interface; Postgres backend in v0.2 |
+| SQLite limits | Single-node only | Resolved: PostgreSQL backend for several instances (v0.2) |
 | LLM judge leaks sensitive context to a third party | Data exposure | Off by default, explicit opt-in, documented data flow, results cached by content hash |
 
 ## 12. Lessons from building v0.1

@@ -168,6 +168,21 @@ agentwarden keys prune       # delete retired private keys after their grace per
 
 Pruned keys keep their public half, so audit checkpoints they signed stay verifiable.
 
+**Running several instances.** SQLite is the default and fine for one process. For more, point every
+instance at the same PostgreSQL database and key ring:
+
+```bash
+pip install -e ".[postgres]"
+export AGENTWARDEN_DATABASE_URL=postgresql://agentwarden:PASSWORD@db.internal/agentwarden
+export AGENTWARDEN_SIGNING_KEY_DIR=/shared/keys
+agentwarden serve
+```
+
+Tokens, revocations, the kill switch, approvals and the audit chain are then shared: an approval
+requested through one instance can be approved and used through another. Appends to the audit hash
+chain are serialized across instances with a Postgres advisory lock, so the chain never forks.
+[`docker-compose.ha.yml`](docker-compose.ha.yml) runs two instances on one database.
+
 ### 3. Guard your agent's tools with the SDK
 
 ```python
@@ -317,8 +332,7 @@ src/agentwarden/
 ## Status & limitations
 
 v0.1 is a working MVP for learning, demos and evaluation, and has **not been hardened for
-production**. Single-node SQLite and no rate
-limiting. All of these are on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
+production**. There's no rate limiting yet, and that's on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
 evaded; see the [threat model](docs/THREAT_MODEL.md) for what is and isn't covered. Report
 security issues as described in [SECURITY.md](SECURITY.md).
 

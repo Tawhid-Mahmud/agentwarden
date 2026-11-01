@@ -115,7 +115,7 @@ class Gateway:
     ) -> Gateway:
         """Wire up a gateway from settings (defaults: environment variables)."""
         settings = settings or Settings.from_env()
-        db = Database(settings.db_path)
+        db = Database(settings.database)
         directory = Directory.load(settings.directory_path)
         registry = AgentRegistry(db)
         registry.seed(directory.seed_agents)
