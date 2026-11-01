@@ -73,7 +73,7 @@ authorized* and *verifiably audited*.
 3. **Attenuate on every hop.** Delegation can only narrow scopes and shorten lifetimes.
 4. **Treat untrusted data as tainted.** Data that came from tools, documents or the web is tracked as
    untrusted. When tainted values reach a sensitive sink, risk goes up.
-5. **Deny overrides.** `deny` beats `require_approval`, which beats `allow`.
+5. **Deny overrides; approvals never grant.** `deny` beats everything, unmatched requests are denied, and `require_approval` only gates actions that an `allow` rule already permits.
 6. **Bind and expire approvals.** Approvals are bound to a hash of the exact call, are single-use,
    expire, and can't be granted by the requester.
 7. **Verifiable by default.** Every decision is logged in a hash chain, and secrets are redacted before storage.
@@ -109,7 +109,7 @@ authorized* and *verifiably audited*.
         1. Authenticate token (EdDSA, aud/iss/exp, revocation, agent chain enabled)
         2. Resolve tool (registry) and check required scope ⊆ token scopes
         3. Risk engine: detectors ──► noisy-OR risk score + evidence
-        4. Policy engine: deny > require_approval > allow > default deny
+        4. Policy engine: deny > default deny > require_approval > allow
         5. Approvals: bound to sha256(tool, args, user, agent), single-use
         6. Audit: hash-chained, redacted, signed checkpoints
                                                         │
@@ -171,13 +171,13 @@ gantt
 
 ## 9. Success metrics
 
-| Metric | Target (v0.1) | How it's measured |
-|---|---|---|
-| Test coverage | ≥ 85% lines | `pytest --cov` in CI |
-| Authorization latency (in-process, heuristics only) | p95 < 5 ms | Micro-benchmark on the demo policy |
-| Injection corpus recall / FPR | ≥ 90% / ≤ 10% | `agentwarden eval` on `evals/injection_corpus.yaml` |
-| Static analysis | 0 high-severity findings | `bandit`, `ruff` security rules |
-| Policy regressions | 0 failing policy cases | `agentwarden policy test` in CI |
+| Metric | Target (v0.1) | Result (v0.1.0) | How it's measured |
+|---|---|---|---|
+| Test coverage | ≥ 85% lines | ✅ **97%** (219 tests) | `pytest --cov`, CI floor 90% |
+| Authorization latency (in-process, heuristics only) | p95 < 5 ms | ✅ **0.95 ms** clean call · **3.6 ms** with 2.5 KB of context | 500-call micro-benchmark incl. token verification and audit write |
+| Injection corpus recall / FPR | ≥ 90% / ≤ 10% | ✅ **95.2% / 8.7%** (precision 90.9%) | `agentwarden eval` on the bundled corpus, CI gate |
+| Static analysis | 0 high-severity findings | ✅ 0 findings | `bandit`, `ruff` security rules, Trojan Source scan |
+| Policy regressions | 0 failing policy cases | ✅ 23/23 | `agentwarden policy test` in CI |
 
 > The bundled corpus is small and hand-written. It works as a **regression suite**, not as a
 > benchmark. Comparing against public datasets is a v1.0 roadmap item.
@@ -203,7 +203,23 @@ gantt
 | SQLite limits | Single-node only | Storage behind a small interface; Postgres backend in v0.2 |
 | LLM judge leaks sensitive context to a third party | Data exposure | Off by default, explicit opt-in, documented data flow, results cached by content hash |
 
-## 12. Definition of done (per feature)
+## 12. Lessons from building v0.1
+
+Building the demo and examples end to end surfaced real issues that unit tests alone missed:
+
+1. **Serialization can launder attacks.** The SDK JSON-encoded tool outputs with
+   `ensure_ascii=True`, which turned smuggled Unicode tag characters into harmless-looking
+   `\uXXXX` text before the detectors saw it. The fix (`ensure_ascii=False`) has a regression test.
+2. **Hard denies need call-level evidence.** A request the user explicitly made was denied only
+   because the agent's context was poisoned. Context-only evidence is now capped so it escalates to
+   approval, and denies require a tainted destination, secrets or injected arguments.
+3. **Security tooling must protect its own repository.** Writing detectors for invisible
+   characters accidentally placed literal invisible characters in the source. A CI scan now blocks
+   them (Trojan Source).
+4. **Flaky security tests hide regressions.** A tamper test that was a no-op 1 time in 16 was caught
+   by CI and made deterministic.
+
+## 13. Definition of done (per feature)
 
 - Code + type hints + docstrings, `ruff` and `mypy --strict` clean
 - Unit tests including at least one adversarial case
