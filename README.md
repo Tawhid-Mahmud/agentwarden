@@ -45,6 +45,7 @@ long-lived API key. Three things go wrong:
     This doesn't depend on how the injection was phrased.
   - **Secret, exfiltration and behavioral-anomaly** detectors.
   - Optional **Claude judge** (structured outputs), off by default.
+- **Approver console** (`/console`): review pending agent actions with full evidence, then approve or deny.
 - **Human-in-the-loop**: approvals bound to `sha256(user, actor chain, tool, args)`, single-use,
   expiring, with separation of duties (approver role, no self-approval).
 - **Tamper-evident audit**: SHA-256 hash chain, secrets redacted, Ed25519-signed checkpoints that
@@ -207,7 +208,21 @@ except AccessDenied as denied:
 
 See [`examples/guarded_agent.py`](examples/guarded_agent.py) for a runnable version.
 
-### 4. Sign in with your identity provider (OIDC)
+### 4. Review approvals in the web console
+
+![Approver console](docs/console.png)
+
+Open **http://127.0.0.1:8000/console** and sign in as an approver (demo: `bob-demo-key`, or an ID
+token when OIDC is configured). Each pending request shows what the user actually asked for next to
+what the agent is trying to do, with the risk evidence, the arguments (secrets redacted), the agent
+chain and the content the agent had read. Approve or deny with an optional note, and the list
+refreshes every few seconds. You can't approve requests made on your own behalf.
+
+The console is built for hostile input, since arguments and evidence often contain attacker-written
+text: it never renders data as HTML, it runs under a strict Content-Security-Policy (no inline or
+third-party script), and it keeps credentials only in the browser tab.
+
+### 5. Sign in with your identity provider (OIDC)
 
 The demo API keys are a stand-in. In a real deployment, users sign in with your organization's
 identity provider (Google, Okta, Microsoft Entra, Keycloak…) and exchange the ID token for an
@@ -237,7 +252,7 @@ Approvers can also sign in with `Authorization: Bearer <ID token>`. To try it wi
 run the throwaway [`examples/dev_idp.py`](examples/dev_idp.py) (development only) and point
 `AGENTWARDEN_OIDC_ISSUER` at `http://127.0.0.1:9000`.
 
-### 5. Put any MCP server behind AgentWarden
+### 6. Put any MCP server behind AgentWarden
 
 `agentwarden mcp-proxy` wraps a stdio [MCP](https://modelcontextprotocol.io) server. The agent's
 MCP client launches the proxy instead of the server, and every `tools/call` is authorized before

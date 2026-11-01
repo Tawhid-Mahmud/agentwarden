@@ -562,6 +562,23 @@ class Gateway:
             args=request.args,
             reasons=outcome.reasons,
             risk_score=outcome.risk.score,
+            details={
+                "user_prompt": (request.user_prompt or "")[:1000] or None,
+                "actor_chain": list(claims.actor_chain),
+                "task": claims.task,
+                "risk_level": outcome.risk.level.value,
+                "signals": [
+                    {
+                        "name": s.name,
+                        "detector": s.detector,
+                        "weight": s.weight,
+                        "evidence": s.evidence[:300],
+                        "location": s.location,
+                    }
+                    for s in outcome.risk.signals[:12]
+                ],
+                "context_sources": [s.source for s in request.context][:20],
+            },
         )
         outcome.approval_id = approval.id
         self.audit.append(

@@ -58,6 +58,9 @@ class ApprovalRequest(BaseModel):
     reviewer: str | None = None
     reviewed_at: datetime | None = None
     note: str = ""
+    #: What a reviewer needs: risk signals with evidence, the user's request, the actor chain
+    #: and where the agent's context came from. Redacted and truncated before storage.
+    details: dict[str, Any] = {}
 
 
 def call_hash(user_id: str, actor_chain: Sequence[str], tool: str, args: Mapping[str, Any]) -> str:
@@ -120,13 +123,14 @@ class ApprovalQueue:
         args: Mapping[str, Any],
         reasons: Sequence[str],
         risk_score: float,
+        details: Mapping[str, Any] | None = None,
     ) -> ApprovalRequest:
         now = self._clock()
         approval_id = "apr_" + secrets.token_urlsafe(18)
         self._db.execute(
             "INSERT INTO approvals (id, decision_id, status, user_id, agent_id, tool, call_hash,"
-            " args_preview, reasons, risk_score, created_at, expires_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " args_preview, reasons, risk_score, created_at, expires_at, details)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 approval_id,
                 decision_id,
@@ -140,6 +144,7 @@ class ApprovalQueue:
                 risk_score,
                 now,
                 now + self._ttl,
+                json.dumps(redact_obj(dict(details or {})), default=str),
             ),
         )
         return self.get(approval_id)
@@ -265,4 +270,5 @@ class ApprovalQueue:
             reviewer=row["reviewer"],
             reviewed_at=_ts(row["reviewed_at"]),
             note=row["note"],
+            details=json.loads(row["details"] or "{}"),
         )

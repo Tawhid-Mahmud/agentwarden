@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS approvals (
     expires_at   {real} NOT NULL,
     reviewer     TEXT,
     reviewed_at  {real},
-    note         TEXT NOT NULL DEFAULT ''
+    note         TEXT NOT NULL DEFAULT '',
+    details      TEXT NOT NULL DEFAULT '{{}}'
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
 
@@ -88,6 +89,10 @@ CREATE INDEX IF NOT EXISTS idx_audit_agent_ts ON audit_log(agent_id, ts);
 SCHEMA = _TABLES.format(real="REAL", bigint="INTEGER")
 POSTGRES_SCHEMA = _TABLES.format(real="DOUBLE PRECISION", bigint="BIGINT")
 TABLES = ("agents", "revoked_tokens", "subject_revocations", "approvals", "audit_log")
+
+#: Columns added after a table first shipped: (table, column, definition). Applied on startup to
+#: databases created by older versions; additive only, so it is safe to run repeatedly.
+COLUMN_MIGRATIONS = (("approvals", "details", "TEXT NOT NULL DEFAULT '{}'"),)
 
 Row = Mapping[str, Any]
 
@@ -156,6 +161,12 @@ class SQLiteDatabase(Database):
                 self._conn.execute("PRAGMA journal_mode = WAL")
                 self._conn.execute("PRAGMA synchronous = NORMAL")
             self._conn.executescript(SCHEMA)
+            for table, column, definition in COLUMN_MIGRATIONS:
+                existing = {
+                    row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")
+                }
+                if column not in existing:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @contextmanager
     def transaction(self, lock: str | None = None) -> Iterator[sqlite3.Connection]:
@@ -231,6 +242,8 @@ class PostgresDatabase(Database):
             for statement in POSTGRES_SCHEMA.split(";"):
                 if statement.strip():
                     tx.execute(statement)
+            for table, column, definition in COLUMN_MIGRATIONS:
+                tx.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
 
     def _connect(self) -> Any:
         return self._psycopg.connect(self._url, autocommit=True, row_factory=self._row_factory)

@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Approver console** at `/console`: approvers sign in with an API key or ID token, see each pending
+  request with the user's original prompt, risk signals and evidence, redacted arguments, the agent
+  chain and context sources, and approve or deny with a note. It never renders data as HTML, runs
+  under a strict CSP, and blocks self-approval in the UI as well as the API. Approval records now
+  store these review details (existing SQLite and Postgres databases are migrated on startup), and
+  `GET /v1/me` reports the signed-in user.
 - **PostgreSQL backend** (`AGENTWARDEN_DATABASE_URL`, `pip install 'agentwarden[postgres]'`): several
   AgentWarden instances can share tokens, revocations, the kill switch, approvals and the audit chain.
   Audit appends and schema creation are serialized across instances with advisory locks; approval

@@ -14,11 +14,12 @@ import hmac
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib import resources
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from agentwarden import __version__
@@ -96,6 +97,23 @@ async def _read_params(request: Request) -> dict[str, str]:
         return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
     parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=False)
     return {k: v[0] for k, v in parsed.items() if v}
+
+
+#: The console renders attacker-influenced text (tool arguments, injected content). The policy
+#: forbids inline script and every non-same-origin load, so even a rendering bug can't run code.
+CONSOLE_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
+def _console_asset(name: str, media_type: str) -> Response:
+    content = (resources.files("agentwarden.api") / "console" / name).read_bytes()
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Security-Policy": CONSOLE_CSP, "Cache-Control": "no-cache"},
+    )
 
 
 def _error_status(exc: AgentWardenError) -> int:
@@ -314,11 +332,25 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         return gateway.authorize(token, body)
 
     # ------------------------------------------------------------- approvals
+    @app.get("/v1/me", tags=["approvals"])
+    def me(user: UserDep) -> dict[str, Any]:
+        """Who is signed in (used by the approver console)."""
+        return {
+            "id": user.id,
+            "name": user.name or user.id,
+            "email": user.email,
+            "roles": user.roles,
+            "approver": APPROVER_ROLE in user.roles,
+        }
+
     @app.get("/v1/approvals", tags=["approvals"])
     def list_approvals(
-        _: ApproverDep, gateway: GatewayDep, status: ApprovalStatus | None = None
+        _: ApproverDep,
+        gateway: GatewayDep,
+        status: ApprovalStatus | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[ApprovalRequest]:
-        return gateway.approvals.list(status)
+        return gateway.approvals.list(status)[:limit]
 
     @app.get("/v1/approvals/{approval_id}", tags=["approvals"])
     def get_approval(approval_id: str, user: UserDep, gateway: GatewayDep) -> ApprovalRequest:
@@ -338,6 +370,23 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         approval_id: str, body: ReviewBody, user: ApproverDep, gateway: GatewayDep
     ) -> ApprovalRequest:
         return gateway.deny_approval(approval_id, user, body.note)
+
+    # --------------------------------------------------------------- console
+    @app.get("/console", include_in_schema=False, response_model=None)
+    def console_page() -> Response:
+        return _console_asset("index.html", "text/html; charset=utf-8")
+
+    @app.get("/console/", include_in_schema=False, response_model=None)
+    def console_slash() -> RedirectResponse:
+        return RedirectResponse("/console")
+
+    @app.get("/console/app.js", include_in_schema=False, response_model=None)
+    def console_js() -> Response:
+        return _console_asset("app.js", "text/javascript; charset=utf-8")
+
+    @app.get("/console/app.css", include_in_schema=False, response_model=None)
+    def console_css() -> Response:
+        return _console_asset("app.css", "text/css; charset=utf-8")
 
     # ----------------------------------------------------------------- admin
     @app.get("/v1/agents", tags=["admin"])

@@ -100,7 +100,7 @@ identity, delegated scopes, policy, provenance and human approval.
 | Identity spoofing & impersonation | Signed tokens with explicit `sub` and `act` |
 | Intent breaking & goal manipulation | Taint tracking and injection detection; task recorded in the token |
 | Repudiation & untraceability | Hash-chained audit with the full actor chain |
-| Overwhelming human-in-the-loop | Approvals only for high-impact actions; risk evidence shown; analyzer tracks volume |
+| Overwhelming human-in-the-loop | Approvals only for high-impact actions; the approver console puts the user's request beside the agent's action with risk evidence; analyzer tracks volume |
 | Rogue agents in multi-agent systems | Per-agent identities, untrusted tier, depth limits, kill switch with cascading revocation |
 | Memory poisoning | 🟡 Partial: stored content re-read later is scanned when reported as context |
 
