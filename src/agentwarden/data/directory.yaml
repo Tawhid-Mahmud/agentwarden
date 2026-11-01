@@ -1,0 +1,123 @@
+# AgentWarden directory: organization settings, users, tools and seed agents.
+#
+# DEMO DATA ONLY. The API keys below are well-known demo values:
+#   alice-demo-key / bob-demo-key / carol-demo-key
+# In production, users authenticate through your IdP (OIDC token exchange is planned for
+# v0.2) and this file holds no credentials. Generate a hash with:
+#   agentwarden hash-key <key>
+
+organization:
+  name: Acme Corp
+  # Email and URL domains treated as internal. Everything else is "external".
+  trusted_domains:
+    - acme.example
+    - docs.acme.example
+
+users:
+  - id: alice
+    name: Alice Chen
+    roles: [employee, finance]
+    entitlements:
+      - docs:read
+      - files:read
+      - files:write
+      - email:read
+      - email:send
+      - crm:read
+      - web:request
+      - payments:write
+    api_key_sha256: 0572c17ed012b3efdf9df98db1718f225887132739b8da945d81ac5a7d1fea45
+
+  - id: bob
+    name: Bob Okafor
+    roles: [employee, approver, security]
+    entitlements: [docs:read, email:read, email:send, crm:read, crm:write]
+    api_key_sha256: 3a1f6bae21de4f036f2aba80fce463677f1070f8bf81f0f475604cccd8e2d7f3
+
+  - id: carol
+    name: Carol Diaz
+    roles: [contractor]
+    entitlements: [docs:read]
+    api_key_sha256: 05e17cacfd02d6850325b37f5cec8ca718ece990dae91990f6917effb1dd6b16
+
+tools:
+  - name: search_docs
+    scope: docs:read
+    risk: low
+    side_effect: read
+    description: Full-text search over the internal knowledge base.
+  - name: read_file
+    scope: files:read
+    risk: medium
+    side_effect: read
+    description: Read a file from the shared workspace.
+  - name: write_file
+    scope: files:write
+    risk: medium
+    side_effect: write
+    description: Write a file in the shared workspace.
+  - name: read_inbox
+    scope: email:read
+    risk: medium
+    side_effect: read
+    description: List and read messages in the user's mailbox.
+  - name: send_email
+    scope: email:send
+    risk: high
+    side_effect: external
+    description: Send an email on behalf of the user.
+  - name: http_request
+    scope: web:request
+    risk: high
+    side_effect: external
+    description: Make an outbound HTTP request.
+  - name: query_crm
+    scope: crm:read
+    risk: medium
+    side_effect: read
+    description: Read customer records.
+  - name: update_crm
+    scope: crm:write
+    risk: high
+    side_effect: write
+    description: Modify customer records.
+  - name: transfer_funds
+    scope: payments:write
+    risk: critical
+    side_effect: external
+    description: Initiate a payment from a company account.
+  - name: run_code
+    scope: code:execute
+    risk: critical
+    side_effect: write
+    description: Execute code in a sandbox.
+
+# Agents registered at startup if they don't exist yet. More can be added through the API.
+agents:
+  - id: inbox-assistant
+    name: Inbox Assistant
+    owner: alice
+    description: Triages and answers email for its user.
+    scope_ceiling: [email:read, email:send, docs:read, files:read]
+    trust_tier: standard
+
+  - id: research-agent
+    name: Research Agent
+    owner: alice
+    description: Browses the web and the knowledge base to answer questions.
+    scope_ceiling: [docs:read, web:request, files:read]
+    trust_tier: standard
+
+  - id: summarizer
+    name: Summarizer Sub-agent
+    owner: alice
+    description: Summarizes documents handed to it by other agents.
+    scope_ceiling: [docs:read, email:read]
+    trust_tier: untrusted
+
+  - id: finance-bot
+    name: Finance Bot
+    owner: bob
+    description: Prepares and initiates vendor payments.
+    scope_ceiling: [payments:write, crm:read, docs:read]
+    trust_tier: privileged
