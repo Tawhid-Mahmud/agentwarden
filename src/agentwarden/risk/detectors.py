@@ -286,7 +286,7 @@ class TaintFlowDetector:
                     name="tainted_external_destination"
                     if external
                     else "tainted_internal_destination",
-                    weight=0.7 if external else 0.3,
+                    weight=0.7 if external else 0.15,
                     evidence=(
                         f"{value!r} appears in untrusted content but not in the user's request"
                     ),

@@ -230,7 +230,7 @@ def test_internal_tainted_destination_has_lower_weight() -> None:
     ctx = make_ctx({"to": ["carol@acme.example"]}, untrusted=["cc carol@acme.example on this"])
     [signal] = TaintFlowDetector().inspect(ctx)
     assert signal.name == "tainted_internal_destination"
-    assert signal.weight == 0.3
+    assert signal.weight == 0.15
 
 
 def test_tainted_url_host_and_path() -> None:
@@ -357,6 +357,17 @@ def test_score_combination() -> None:
     )
     kept = strongest_per_name([sig("a", "x", 0.2), sig("a", "x", 0.7), sig("b", "y", 0.1)])
     assert [(s.name, s.weight) for s in kept] == [("x", 0.7), ("y", 0.1)]
+
+
+def test_context_only_injection_is_capped() -> None:
+    sig = lambda n, w, loc: RiskSignal(detector="injection", name=n, weight=w, location=loc)  # noqa: E731
+    context_only = [
+        sig("unicode_tag_smuggling", 0.7, "context:email"),
+        sig("instruction_override", 0.6, "context:email"),
+    ]
+    assert combine(context_only) == pytest.approx(0.75)
+    in_args = [*context_only, sig("injection_in_arguments", 0.42, "args.body")]
+    assert combine(in_args) > 0.75  # injected text flowing into the call is not capped
 
 
 def test_engine_assess_end_to_end(directory: Directory) -> None:

@@ -79,6 +79,21 @@ def test_hidden_injection_exfiltration_denied(gw: Gateway) -> None:
     )
 
 
+def test_user_request_in_poisoned_context_needs_approval_not_deny(gw: Gateway) -> None:
+    hidden = obfuscate("unicode_tags", INJECTION)
+    result = call(
+        gw,
+        token_for(gw),
+        "send_email",
+        {"to": ["bob@acme.example"], "body": "I'm in for lunch"},
+        user_prompt="Tell Bob I'm in for lunch",
+        context=[ContextSegment(source="email:7", content="Invoice attached." + hidden)],
+    )
+    assert result.decision is Decision.REQUIRE_APPROVAL
+    assert "approve-elevated-risk" in result.matched_rules
+    assert result.risk.score < 0.85
+
+
 def test_reading_poisoned_content_is_still_allowed(gw: Gateway) -> None:
     result = call(
         gw,

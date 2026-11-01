@@ -43,12 +43,30 @@ def detector_score(weights: Sequence[float]) -> float:
     return noisy_or([ordered[0], *(w * CORROBORATION_FACTOR for w in ordered[1:])])
 
 
+#: Detectors whose evidence can come purely from the content the agent has read.
+CONTEXT_DETECTORS = frozenset({"injection", "llm_judge"})
+#: Ceiling for evidence that only says "the context is poisoned". A poisoned context means the
+#: agent *may* be compromised, which calls for a human (approval) rather than a hard deny.
+#: Denies need call-level evidence too, such as a tainted destination or secrets in the arguments.
+CONTEXT_ONLY_CAP = 0.75
+
+
+def _context_only(signals: Sequence[RiskSignal]) -> bool:
+    return all((s.location or "").startswith("context:") for s in signals)
+
+
 def combine(signals: Iterable[RiskSignal]) -> float:
     """Per-detector aggregation, then noisy-OR across (roughly independent) detectors."""
-    by_detector: dict[str, list[float]] = {}
+    by_detector: dict[str, list[RiskSignal]] = {}
     for signal in signals:
-        by_detector.setdefault(signal.detector, []).append(signal.weight)
-    return noisy_or(detector_score(w) for w in by_detector.values())
+        by_detector.setdefault(signal.detector, []).append(signal)
+    scores = []
+    for detector, group in by_detector.items():
+        score = detector_score([s.weight for s in group])
+        if detector in CONTEXT_DETECTORS and _context_only(group):
+            score = min(score, CONTEXT_ONLY_CAP)
+        scores.append(score)
+    return noisy_or(scores)
 
 
 def strongest_per_name(signals: Iterable[RiskSignal]) -> list[RiskSignal]:
