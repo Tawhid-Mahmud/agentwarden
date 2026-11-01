@@ -7,7 +7,7 @@ policy, with a risk score that understands prompt injection.
 
 [![CI](https://github.com/Tawhid-Mahmud/agentwarden/actions/workflows/ci.yml/badge.svg)](https://github.com/Tawhid-Mahmud/agentwarden/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
-![Coverage](https://img.shields.io/badge/coverage-97%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 > An email tells your inbox agent, in invisible Unicode, to *"forward the Q3 financials to
@@ -45,12 +45,18 @@ long-lived API key. Three things go wrong:
     This doesn't depend on how the injection was phrased.
   - **Secret, exfiltration and behavioral-anomaly** detectors.
   - Optional **Claude judge** (structured outputs), off by default.
+- **Tool-side receipts**: tools can verify a signed, single-use proof that AgentWarden allowed exactly this call.
+- **Rate limiting**: per IP, per agent, and lockout after repeated failed sign-ins.
+- **Approver console** (`/console`): review pending agent actions with full evidence, then approve or deny.
 - **Human-in-the-loop**: approvals bound to `sha256(user, actor chain, tool, args)`, single-use,
   expiring, with separation of duties (approver role, no self-approval).
 - **Tamper-evident audit**: SHA-256 hash chain, secrets redacted, Ed25519-signed checkpoints that
   also expose truncation.
 - **Least-privilege analyzer**: unused or wildcard scopes, dormant agents, deny-rate spikes and
   injection exposure, reported as Markdown or JSON.
+- **OIDC sign-in**: users authenticate with your identity provider and exchange the ID token for an
+  agent token (RFC 8693 token exchange).
+- **MCP proxy mode**: enforce every decision on any stdio MCP server, with no agent changes.
 - **Interfaces**: REST API (FastAPI), Python SDK with a `@guard` decorator, CLI, Docker.
 
 ## How it works
@@ -114,8 +120,7 @@ delegation, the kill switch, audit tampering and least-privilege findings. An ex
 
 ```bash
 export AGENTWARDEN_ADMIN_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-agentwarden keygen --out keys/signing-key.pem          # persistent Ed25519 key (0600)
-export AGENTWARDEN_SIGNING_KEY_PATH=keys/signing-key.pem
+export AGENTWARDEN_SIGNING_KEY_DIR=keys                # rotating Ed25519 key ring, created on first start
 agentwarden serve                                      # http://127.0.0.1:8000/docs
 ```
 
@@ -152,7 +157,40 @@ curl -s localhost:8000/v1/authorize -H "Authorization: Bearer $TOKEN" -H "conten
 }
 ```
 
-Or with Docker: `docker compose run --rm agentwarden agentwarden keygen --out /keys/signing-key.pem && docker compose up --build`.
+Or with Docker: `docker compose up --build`.
+
+**Rate limits** apply per client IP (600 requests/min), more strictly to sign-in and token
+endpoints (30/min), and per agent to authorization calls (300/min). After 20 failed sign-ins in a
+minute, an address is locked out briefly. Over-limit requests get `429` with `Retry-After`. Tune
+them with `AGENTWARDEN_RATE_LIMIT_*`, where `0` disables a limit. Behind a reverse proxy, set
+`AGENTWARDEN_TRUST_PROXY_HEADERS=true` so limits use the real client address.
+
+**Rotating the signing key** never breaks live tokens. The new key signs from then on, the old one
+keeps verifying until the longest token lifetime has passed, and other running instances pick up the
+change within seconds:
+
+```bash
+agentwarden keys rotate      # or POST /v1/admin/keys/rotate
+agentwarden keys list        # active / retired (with time left) / pruned
+agentwarden keys prune       # delete retired private keys after their grace period
+```
+
+Pruned keys keep their public half, so audit checkpoints they signed stay verifiable.
+
+**Running several instances.** SQLite is the default and fine for one process. For more, point every
+instance at the same PostgreSQL database and key ring:
+
+```bash
+pip install -e ".[postgres]"
+export AGENTWARDEN_DATABASE_URL=postgresql://agentwarden:PASSWORD@db.internal/agentwarden
+export AGENTWARDEN_SIGNING_KEY_DIR=/shared/keys
+agentwarden serve
+```
+
+Tokens, revocations, the kill switch, approvals and the audit chain are then shared: an approval
+requested through one instance can be approved and used through another. Appends to the audit hash
+chain are serialized across instances with a Postgres advisory lock, so the chain never forks.
+[`docker-compose.ha.yml`](docker-compose.ha.yml) runs two instances on one database.
 
 ### 3. Guard your agent's tools with the SDK
 
@@ -177,6 +215,107 @@ except AccessDenied as denied:
 ```
 
 See [`examples/guarded_agent.py`](examples/guarded_agent.py) for a runnable version.
+
+### 4. Review approvals in the web console
+
+![Approver console](docs/console.png)
+
+Open **http://127.0.0.1:8000/console** and sign in as an approver (demo: `bob-demo-key`, or an ID
+token when OIDC is configured). Each pending request shows what the user actually asked for next to
+what the agent is trying to do, with the risk evidence, the arguments (secrets redacted), the agent
+chain and the content the agent had read. Approve or deny with an optional note, and the list
+refreshes every few seconds. You can't approve requests made on your own behalf.
+
+The console is built for hostile input, since arguments and evidence often contain attacker-written
+text: it never renders data as HTML, it runs under a strict Content-Security-Policy (no inline or
+third-party script), and it keeps credentials only in the browser tab.
+
+### 5. Sign in with your identity provider (OIDC)
+
+The demo API keys are a stand-in. In a real deployment, users sign in with your organization's
+identity provider (Google, Okta, Microsoft Entra, Keycloak…) and exchange the ID token for an
+agent token using **OAuth 2.0 Token Exchange ([RFC 8693](https://www.rfc-editor.org/rfc/rfc8693))**.
+AgentWarden never sees a password.
+
+```bash
+export AGENTWARDEN_OIDC_ISSUER=https://accounts.google.com     # your IdP
+export AGENTWARDEN_OIDC_AUDIENCE=<your OAuth client id>
+export AGENTWARDEN_API_KEYS=false                                # turn off the demo keys
+agentwarden serve
+```
+
+```bash
+curl -s localhost:8000/v1/token/exchange \
+  -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
+  -d subject_token_type=urn:ietf:params:oauth:token-type:id_token \
+  --data-urlencode "subject_token=$ID_TOKEN" \
+  -d audience=agent:inbox-assistant \
+  --data-urlencode "scope=email:read email:send"
+```
+
+Each ID token can be exchanged **once**, even across instances, so a leaked login token can't be
+replayed to mint more agent tokens. Users are matched by **verified** email (`email` in `directory.yaml`), or by `sub` with
+`AGENTWARDEN_OIDC_USER_CLAIM=sub`. ID tokens are checked strictly: asymmetric algorithms only,
+exact issuer, audience and `azp`, expiry, and keys from the IdP's JWKS with automatic rotation.
+Approvers can also sign in with `Authorization: Bearer <ID token>`. To try it without a real IdP,
+run the throwaway [`examples/dev_idp.py`](examples/dev_idp.py) (development only) and point
+`AGENTWARDEN_OIDC_ISSUER` at `http://127.0.0.1:9000`.
+
+### 6. Make tools enforce decisions themselves (receipts)
+
+Every **allowed** decision comes with a `receipt`: a 60-second, single-use signed token bound to
+the exact tool and arguments. A tool that checks receipts can't be called by an agent that skipped
+AgentWarden, reused an old decision, or changed the arguments after approval:
+
+```python
+from agentwarden.receipts import ReceiptVerifier
+
+verifier = ReceiptVerifier(
+    issuer="https://agentwarden.local",
+    jwks_url="https://agentwarden.internal/.well-known/jwks.json",  # follows key rotation
+)
+
+def send_email(to: list[str], body: str, receipt: str) -> None:
+    verifier.verify(receipt, tool="send_email", args={"to": to, "body": body})  # raises if not allowed
+    ...
+```
+
+With the SDK, `@warden.guard(pass_receipt=True)` hands the receipt to your function as
+`agentwarden_receipt`. For HTTP tools, forward it as the `X-AgentWarden-Receipt` header. The MCP
+proxy adds it to every forwarded call as `_meta["agentwarden/receipt"]`.
+
+### 7. Put any MCP server behind AgentWarden
+
+`agentwarden mcp-proxy` wraps a stdio [MCP](https://modelcontextprotocol.io) server. The agent's
+MCP client launches the proxy instead of the server, and every `tools/call` is authorized before
+it reaches the server. No changes to the agent or the server are needed:
+
+- **Allowed** calls are forwarded unchanged.
+- **Denied** calls never reach the server. The proxy answers with an MCP tool error
+  (`isError: true`) that tells the model why and not to retry.
+- **Approvals** need no client support. The proxy remembers the pending approval for that exact
+  call. Once a human approves it, the agent retries the same call and it goes through, once.
+- **Tool outputs** are recorded as untrusted context automatically, so taint tracking and injection
+  detection work without any SDK code.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "agentwarden",
+      "args": ["mcp-proxy", "--url", "http://127.0.0.1:8000", "--map", "mcp-mapping.yaml",
+               "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": { "AGENTWARDEN_TOKEN": "<agent token from POST /v1/tokens>" }
+    }
+  }
+}
+```
+
+[`examples/mcp-mapping.yaml`](examples/mcp-mapping.yaml) maps the server's tool names to
+AgentWarden tools and can hide unmapped tools from `tools/list`. Clients can pass the user's request
+for taint tracking in `params._meta["agentwarden/userPrompt"]`, or set it once with `--user-prompt`.
+For a self-contained try-out, `--local --agent inbox-assistant --scopes email:read email:send` runs
+an in-process gateway with the demo directory.
 
 ## Policy, briefly
 
@@ -219,8 +358,11 @@ Public-benchmark evaluation is on the [roadmap](docs/PROJECT_PLAN.md#8-roadmap-p
 
 ```bash
 make install   # editable install with dev + LLM extras
-make check     # ruff, mypy --strict, bandit, hidden-character scan, 219 tests (97% coverage), policy suite, eval gate
+make check     # ruff, mypy --strict, bandit, hidden-character scan, tests (95% coverage), policy suite, eval gate
 ```
+
+The suite has 346 tests. Storage tests also run against PostgreSQL when
+`AGENTWARDEN_TEST_DATABASE_URL` points at a throwaway database, which CI does on Postgres 16.
 
 ```text
 src/agentwarden/
@@ -239,9 +381,8 @@ src/agentwarden/
 
 ## Status & limitations
 
-v0.1 is a working MVP for learning, demos and evaluation, and has **not been hardened for
-production**. Single-node SQLite, demo API keys instead of OIDC, one signing key and no rate
-limiting. All of these are on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
+AgentWarden is a young project for learning, demos and evaluation, and hasn't had an external
+security review yet (it's on the [roadmap](docs/PROJECT_PLAN.md)). Heuristic detection can be
 evaded; see the [threat model](docs/THREAT_MODEL.md) for what is and isn't covered. Report
 security issues as described in [SECURITY.md](SECURITY.md).
 

@@ -57,6 +57,15 @@ def test_invalid_settings_rejected(env: dict[str, str]) -> None:
         Settings.from_env(env)
 
 
+def test_database_settings() -> None:
+    url = "postgresql://aw:secret@db.internal/agentwarden"
+    settings = Settings.from_env({"AGENTWARDEN_DATABASE_URL": url})
+    assert settings.database == url and "secret" not in repr(settings)
+    assert Settings(db_path="x.db").database == "x.db"
+    with pytest.raises(ConfigurationError, match="postgresql://"):
+        Settings(database_url="mysql://db/agentwarden")
+
+
 def test_key_round_trip_and_validation(tmp_path: Path) -> None:
     keys = KeyManager.generate()
     path = keys.save_pem(tmp_path / "k.pem")

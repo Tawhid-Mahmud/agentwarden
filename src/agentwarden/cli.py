@@ -6,13 +6,15 @@ import argparse
 import getpass
 import json
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from agentwarden import __version__
 from agentwarden.config import DEFAULT_CORPUS_PATH, Settings
-from agentwarden.errors import AgentWardenError
+from agentwarden.errors import AgentWardenError, ConfigurationError
 
 
 def _settings(args: argparse.Namespace) -> Settings:
@@ -56,6 +58,44 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     print(f"wrote Ed25519 signing key to {path} (mode 0600)")
     print(f"kid: {keys.kid}")
     print(f"export AGENTWARDEN_SIGNING_KEY_PATH={path}")
+    return 0
+
+
+def _ring(args: argparse.Namespace) -> Any:
+    from agentwarden.identity import KeyRing
+
+    settings = Settings.from_env()
+    directory = args.dir or settings.signing_key_dir
+    if directory is None:
+        raise ConfigurationError("give --dir or set AGENTWARDEN_SIGNING_KEY_DIR")
+    return KeyRing.open(
+        directory, grace_seconds=settings.key_grace_seconds, create=args.command_name == "rotate"
+    )
+
+
+def _print_keys(ring: Any) -> None:
+    for entry in ring.entries():
+        until = ""
+        if entry.status == "retired" and entry.retired_at is not None:
+            left = max(0, int(entry.retired_at + ring.grace_seconds - time.time()))
+            until = f"  verifies tokens for {left}s more"
+        print(f"{entry.status:<8} {entry.kid}{until}")
+
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    from agentwarden.identity.keyring import MANIFEST
+
+    directory = args.dir or Settings.from_env().signing_key_dir
+    existed = directory is not None and (Path(directory) / MANIFEST).exists()
+    ring = _ring(args)
+    if args.command_name == "rotate":
+        if existed:  # a brand-new ring was just created with its first key
+            ring.rotate()
+        print(f"active key is now {ring.kid}")
+    elif args.command_name == "prune":
+        pruned = ring.prune()
+        print(f"pruned {len(pruned)} key(s)" + (": " + ", ".join(pruned) if pruned else ""))
+    _print_keys(ring)
     return 0
 
 
@@ -111,7 +151,7 @@ def cmd_audit_verify(args: argparse.Namespace) -> int:
     from agentwarden.audit import AuditLog
     from agentwarden.storage import Database
 
-    db = Database(_settings(args).db_path)
+    db = Database(_settings(args).database)
     try:
         result = AuditLog(db).verify()
     finally:
@@ -169,6 +209,63 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_mcp_proxy(args: argparse.Namespace) -> int:
+    import asyncio
+    import logging
+    import os
+
+    from agentwarden.mcp import McpProxy, ToolMapping, run_stdio_proxy
+    from agentwarden.sdk import LocalWarden, WardenClient
+    from agentwarden.sdk.client import _WardenBase
+
+    # stdout carries the MCP protocol: every diagnostic goes to stderr.
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="agentwarden: %(message)s")
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("error: give the upstream MCP server command after '--'", file=sys.stderr)
+        return 2
+    mapping = ToolMapping.load(args.map) if args.map else ToolMapping()
+
+    warden: _WardenBase
+    gateway = None
+    if args.local:
+        from agentwarden.gateway import Gateway
+        from agentwarden.models import TokenRequest
+
+        if not args.agent or not args.scopes:
+            print("error: --local needs --agent and --scopes", file=sys.stderr)
+            return 2
+        gateway = Gateway.build(_settings(args))
+        user = gateway.directory.get_user(args.user)
+        if user is None:
+            gateway.close()
+            print(f"error: unknown user {args.user!r}", file=sys.stderr)
+            return 2
+        try:
+            issued = gateway.issue_token(
+                user, TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task)
+            )
+        except AgentWardenError:
+            gateway.close()
+            raise
+        warden = LocalWarden(gateway, issued.access_token)
+    else:
+        token = os.environ.get("AGENTWARDEN_TOKEN")
+        if not token:
+            print("error: set AGENTWARDEN_TOKEN (the agent token) or use --local", file=sys.stderr)
+            return 2
+        warden = WardenClient(args.url, token)
+    if args.user_prompt:
+        warden.set_user_prompt(args.user_prompt)
+    try:
+        return asyncio.run(run_stdio_proxy(McpProxy(warden, mapping), command))
+    finally:
+        if gateway is not None:
+            gateway.close()
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from agentwarden.demo import run_demo
 
@@ -197,6 +294,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("keygen", help="create an Ed25519 signing key")
     p.add_argument("--out", default="keys/signing-key.pem")
     p.set_defaults(func=cmd_keygen)
+
+    keys = sub.add_parser("keys", help="signing-key ring: rotate, list, prune")
+    keys_sub = keys.add_subparsers(dest="command_name", required=True)
+    for name, text in (
+        ("list", "show keys and their status"),
+        ("rotate", "create a new active key (creates the ring if needed)"),
+        ("prune", "delete private keys whose grace period is over"),
+    ):
+        p = keys_sub.add_parser(name, help=text)
+        p.add_argument("--dir", help="key ring directory (default: AGENTWARDEN_SIGNING_KEY_DIR)")
+        p.set_defaults(func=cmd_keys)
 
     p = sub.add_parser("hash-key", help="hash a user API key for directory.yaml")
     p.add_argument(
@@ -238,6 +346,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser(
+        "mcp-proxy",
+        help="enforce AgentWarden on a stdio MCP server",
+        description="Run an MCP server behind AgentWarden: mcp-proxy [options] -- CMD...",
+    )
+    p.add_argument("--url", default="http://127.0.0.1:8000", help="AgentWarden service URL")
+    p.add_argument("--map", help="YAML mapping of MCP tool names to AgentWarden tools")
+    p.add_argument("--user-prompt", help="the user's request, for taint tracking")
+    p.add_argument("--local", action="store_true", help="in-process gateway (demos and tests)")
+    p.add_argument("--user", default="alice", help="--local: user who delegates to the agent")
+    p.add_argument("--agent", help="--local: agent id")
+    p.add_argument("--scopes", nargs="+", help="--local: scopes to request")
+    p.add_argument("--task", help="--local: task recorded in the token")
+    p.add_argument("--db", help="--local: SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="-- upstream server command")
+    p.set_defaults(func=cmd_mcp_proxy)
 
     p = sub.add_parser("demo", help="run the scripted end-to-end attack demo")
     p.add_argument("--no-color", action="store_true")

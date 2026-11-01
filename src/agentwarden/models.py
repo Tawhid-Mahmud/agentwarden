@@ -77,6 +77,10 @@ class User(BaseModel):
     name: str = ""
     roles: list[str] = Field(default_factory=list)
     entitlements: list[str] = Field(default_factory=list)
+    #: Matched against the IdP's verified ``email`` claim (OIDC sign-in).
+    email: str | None = None
+    #: Matched against the IdP's ``sub`` claim when ``oidc_user_claim`` is "sub".
+    oidc_subject: str | None = None
     api_key_sha256: str | None = Field(default=None, exclude=True, repr=False)
 
 
@@ -145,6 +149,8 @@ class AuthorizationResult(BaseModel):
     approval_id: str | None = None
     user_id: str | None = None
     agent_id: str | None = None
+    #: Signed proof that this exact call was allowed, for tools that enforce it (allow only).
+    receipt: str | None = Field(default=None, repr=False)
 
     @property
     def allowed(self) -> bool:

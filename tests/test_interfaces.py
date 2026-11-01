@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from agentwarden import __version__
 from agentwarden.api import create_app
 from agentwarden.cli import main
 from agentwarden.config import Settings
@@ -342,7 +343,7 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str]:
 
 
 def test_cli_basics(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
-    assert run(capsys, "version") == (0, "agentwarden 0.1.0\n")
+    assert run(capsys, "version") == (0, f"agentwarden {__version__}\n")
     code, out = run(capsys, "policy", "validate")
     assert code == 0 and "16 rules" in out
     bad = tmp_path / "bad.yaml"

@@ -84,6 +84,17 @@ class Directory:
     def get_tool(self, name: str) -> Tool | None:
         return self.tools.get(name)
 
+    def find_by_identity(self, *, claim: str, value: str | None) -> User | None:
+        """Find the user an IdP identity belongs to (``claim`` is "email" or "sub")."""
+        if not value:
+            return None
+        for user in self.users.values():
+            if claim == "email" and user.email and user.email.lower() == value.lower():
+                return user
+            if claim == "sub" and user.oidc_subject == value:
+                return user
+        return None
+
     def authenticate_api_key(self, key: str) -> User | None:
         """Return the user owning ``key``. Compares every hash in constant time."""
         if not key:

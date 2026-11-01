@@ -31,6 +31,14 @@ class InvalidRequestError(AgentWardenError):
     """The request is well-formed but semantically invalid."""
 
 
+class RateLimitedError(AgentWardenError):
+    """Too many requests; retry after ``retry_after`` seconds."""
+
+    def __init__(self, message: str, retry_after: float) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 class PolicyError(ConfigurationError):
     """A policy document failed validation."""
 

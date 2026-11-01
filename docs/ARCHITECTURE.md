@@ -31,7 +31,7 @@ flowchart TB
         ANA["LeastPrivilegeAnalyzer"]
     end
 
-    DB[("SQLite<br/>agents · revocations ·<br/>approvals · audit_log")]
+    DB[("SQLite or PostgreSQL<br/>agents · revocations ·<br/>approvals · audit_log")]
 
     User --> API
     Agent --> API
@@ -66,7 +66,7 @@ flowchart TB
 
 | Principal | Represented as | Authenticates with |
 |---|---|---|
-| Human user | `User` in the directory (roles, entitlements) | API key hash (demo stand-in for OIDC, v0.2) |
+| Human user | `User` in the directory (roles, entitlements, email / IdP subject) | IdP ID token via OIDC and RFC 8693 token exchange; demo API keys optional |
 | Agent | `Agent` in the registry (owner, trust tier, scope ceiling, enabled) | Delegated JWT |
 | Admin | n/a | `X-Admin-Key` shared secret (constant-time compare) |
 
@@ -116,6 +116,7 @@ flowchart LR
 
 `Gateway.authorize(token, request)`, where `request = {tool, args, user_prompt, context[], approval_id?}`:
 
+0. **Rate limit**: per-IP and per-agent token buckets; repeated failed sign-ins lock an address out.
 1. **Authenticate**: signature, `iss`/`aud`/`exp`/`iat`, structural consistency (`dep` vs. `act`
    depth, ancestors) and revocation. Failures raise 401 and are audited as `auth.failed`.
 2. **Continuous authorization**. All of these are deterministic denies:
@@ -135,7 +136,9 @@ flowchart LR
    hash of `(user, actor chain, tool, args)`. Possible outcomes: *consumed* (→ allow), *pending*,
    *denied* (→ deny), *mismatch* or *used* (→ deny + `approval.misuse` audit event), or
    *expired/unknown* (→ a new approval is requested).
-7. **Audit**: one `authz.decision` entry with decision, reasons, matched rules, risk summary,
+7. **Receipt**: an allowed call gets a signed receipt (`aw-receipt+jwt`, audience `tool:<name>`,
+   SHA-256 of the canonical arguments, 60 s, single use) that tools can verify with the public JWKS.
+8. **Audit**: one `authz.decision` entry with decision, reasons, matched rules, risk summary,
    redacted argument preview, argument hash, facts and context sources.
 
 ```mermaid
@@ -194,10 +197,22 @@ every tool output (`observe()`, `@guard(observe_output=True)`), with smuggled Un
 
 ## Storage
 
-One SQLite connection behind a re-entrant lock (WAL mode for files). Tables: `agents`,
-`revoked_tokens`, `subject_revocations`, `approvals`, `audit_log`. Writes that must be atomic
-(appending to the chain, consuming approvals) use `BEGIN IMMEDIATE` or conditional `UPDATE … WHERE
-status = ?`. All SQL is static and parameterized.
+Two backends behind one small interface (`execute`, `query`, `query_one`, `transaction`):
+`Database("agentwarden.db")` opens SQLite (one process, WAL mode) and
+`Database("postgresql://…")` opens PostgreSQL (many instances). Tables: `agents`,
+`revoked_tokens`, `subject_revocations`, `approvals`, `audit_log`. All SQL is static,
+parameterized and written in the dialect both databases share. Timestamps are `DOUBLE PRECISION`
+on Postgres because revocation cutoffs compare exact float times.
+
+Concurrency across instances:
+
+- **Audit chain**: appends run in a transaction holding a named lock (`BEGIN IMMEDIATE` on SQLite,
+  `pg_advisory_xact_lock` on Postgres), so concurrent writers can't read the same head and fork the
+  chain. A test with eight writers on two connections proves it (and fails without the lock).
+- **Approvals**: consumption is a conditional `UPDATE … WHERE status = 'approved'`, so exactly one
+  instance wins a race.
+- **Schema creation** takes a lock too, so instances starting together don't collide.
+- **Signing keys** are shared through the key ring directory, which instances reload when it changes.
 
 ### Audit chain
 
@@ -216,8 +231,8 @@ stores checkpoints elsewhere can prove the log still contains that head.
 - **Detectors**: anything with `name` and `inspect(ctx) -> list[RiskSignal]` (see
   `risk.detectors.Detector`). Pass it via `Gateway.build(extra_detectors=[...])`.
 - **Policy**: YAML today. Cedar/OPA backends are on the roadmap behind the same `evaluate(context)` call.
-- **Storage**: `Database` exposes a small surface (`execute`, `query`, `transaction`); a Postgres
-  implementation is planned.
+- **Storage**: `Database` exposes a small surface (`execute`, `query`, `transaction`), with SQLite and
+  PostgreSQL implementations.
 
 ## Design decisions
 
@@ -228,5 +243,5 @@ stores checkpoints elsewhere can prove the log still contains that head.
 | Approvals gate allowed actions but never grant | Approval as an override | A human click can't unlock what policy forbids (least privilege) |
 | Taint by substring provenance | Full information-flow control (CaMeL-style dual LLM) | Works with any agent framework today; IFC remains a research direction |
 | Context-only risk capped at approval | Deny on any injection evidence | Avoids blocking the user's own requests; denies stay evidence-based |
-| SQLite + hash chain | External ledger, WORM storage | Zero-dependency MVP; checkpoints can be exported to WORM storage |
+| SQLite by default, PostgreSQL for several instances, plus a hash chain | External ledger, WORM storage | Zero-dependency default; checkpoints can be exported to WORM storage |
 | Heuristics first, LLM judge optional | LLM-only detection | Deterministic, free, offline, testable; the LLM covers paraphrases |

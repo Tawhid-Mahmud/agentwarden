@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentWarden Approvals</title>
+  <link rel="stylesheet" href="/console/app.css">
+  <script src="/console/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <span>AgentWarden <strong>Approvals</strong></span>
+    </div>
+    <div class="who" id="who" hidden>
+      <span id="who-name"></span>
+      <button type="button" class="link" id="sign-out">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="signin" id="signin">
+      <h1>Review what your agents want to do</h1>
+      <p class="muted">High-impact agent actions wait here for a human decision. Sign in as an approver.</p>
+      <form id="signin-form" novalidate>
+        <fieldset class="method">
+          <legend class="label">Sign in with</legend>
+          <label><input type="radio" name="method" value="key" id="method-key" checked> API key</label>
+          <label><input type="radio" name="method" value="token" id="method-token"> ID token (OIDC)</label>
+        </fieldset>
+        <label class="label" for="credential">Credential</label>
+        <input id="credential" type="password" autocomplete="off" spellcheck="false" required>
+        <p class="hint">Kept only in this browser tab and sent only to this AgentWarden server.</p>
+        <button type="submit" class="primary" id="signin-button">Sign in</button>
+        <p class="error" id="signin-error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section class="workspace" id="workspace" hidden>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="tab-pending" aria-selected="true">Pending <span class="count" id="pending-count">0</span></button>
+        <button type="button" role="tab" id="tab-history" aria-selected="false">History</button>
+        <span class="refresh muted" id="refreshed"></span>
+      </div>
+      <p class="notice" id="not-approver" hidden>You're signed in, but your account doesn't have the approver role, so you can't review requests.</p>
+      <div id="list" class="list" aria-live="polite"></div>
+      <div class="empty" id="empty" hidden>
+        <h2>Nothing is waiting for you</h2>
+        <p class="muted">When an agent asks to do something that needs a human, it shows up here within a few seconds.</p>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

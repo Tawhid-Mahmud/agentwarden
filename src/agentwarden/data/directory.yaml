@@ -16,6 +16,7 @@ organization:
 users:
   - id: alice
     name: Alice Chen
+    email: alice@acme.example
     roles: [employee, finance]
     entitlements:
       - docs:read
@@ -30,12 +31,14 @@ users:
 
   - id: bob
     name: Bob Okafor
+    email: bob@acme.example
     roles: [employee, approver, security]
     entitlements: [docs:read, email:read, email:send, crm:read, crm:write]
     api_key_sha256: 3a1f6bae21de4f036f2aba80fce463677f1070f8bf81f0f475604cccd8e2d7f3
 
   - id: carol
     name: Carol Diaz
+    email: carol@acme.example
     roles: [contractor]
     entitlements: [docs:read]
     api_key_sha256: 05e17cacfd02d6850325b37f5cec8ca718ece990dae91990f6917effb1dd6b16

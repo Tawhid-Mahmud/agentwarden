@@ -26,14 +26,22 @@ from agentwarden.approvals import ApprovalQueue, ApprovalRequest, preview_args
 from agentwarden.audit import AUTHZ_EVENT, AuditLog, canonical_json
 from agentwarden.config import Settings
 from agentwarden.directory import Directory
-from agentwarden.errors import AgentWardenError, AuthenticationError, InvalidRequestError
+from agentwarden.errors import (
+    AgentWardenError,
+    AuthenticationError,
+    InvalidRequestError,
+    RateLimitedError,
+)
 from agentwarden.identity import (
     AgentRegistry,
     KeyManager,
+    KeyRing,
     RevocationList,
     TokenClaims,
     TokenService,
 )
+from agentwarden.identity.keys import SigningKeys
+from agentwarden.identity.oidc import IdentityClaims, OidcVerifier
 from agentwarden.identity.scopes import covered_by_any
 from agentwarden.models import (
     Agent,
@@ -49,6 +57,8 @@ from agentwarden.models import (
     User,
 )
 from agentwarden.policy import PolicyEngine
+from agentwarden.ratelimit import RateLimiter
+from agentwarden.receipts import issue_receipt
 from agentwarden.risk import DetectionContext, Detector, RiskEngine, compute_facts, flatten_strings
 from agentwarden.risk.text import CallFacts
 from agentwarden.storage import Database
@@ -78,13 +88,14 @@ class Gateway:
         directory: Directory,
         registry: AgentRegistry,
         revocations: RevocationList,
-        keys: KeyManager,
+        keys: SigningKeys,
         tokens: TokenService,
         policy: PolicyEngine,
         risk: RiskEngine,
         approvals: ApprovalQueue,
         audit: AuditLog,
         clock: Callable[[], float] = time.time,
+        oidc: OidcVerifier | None = None,
     ) -> None:
         self.settings = settings
         self.db = db
@@ -97,7 +108,9 @@ class Gateway:
         self.risk = risk
         self.approvals = approvals
         self.audit = audit
+        self.oidc = oidc
         self._clock = clock
+        self.agent_limiter = RateLimiter(settings.rate_limit_per_agent, clock=clock)
 
     @classmethod
     def build(
@@ -106,15 +119,22 @@ class Gateway:
         *,
         clock: Callable[[], float] = time.time,
         extra_detectors: Sequence[Detector] = (),
+        oidc: OidcVerifier | None = None,
     ) -> Gateway:
         """Wire up a gateway from settings (defaults: environment variables)."""
         settings = settings or Settings.from_env()
-        db = Database(settings.db_path)
+        db = Database(settings.database)
         directory = Directory.load(settings.directory_path)
         registry = AgentRegistry(db)
         registry.seed(directory.seed_agents)
         revocations = RevocationList(db, clock=clock)
-        keys = KeyManager.load_or_generate(settings.signing_key_path)
+        keys: SigningKeys
+        if settings.signing_key_dir is not None:
+            keys = KeyRing.open(
+                settings.signing_key_dir, grace_seconds=settings.key_grace_seconds, clock=clock
+            )
+        else:
+            keys = KeyManager.load_or_generate(settings.signing_key_path)
         audit = AuditLog(db, keys=keys, clock=clock)
         detectors = list(extra_detectors)
         if settings.llm_judge_enabled:
@@ -133,6 +153,19 @@ class Gateway:
             risk=RiskEngine.default(activity=audit, clock=clock, extra=detectors),
             approvals=ApprovalQueue(db, ttl=settings.approval_ttl, clock=clock),
             audit=audit,
+            clock=clock,
+            oidc=oidc or cls._oidc_from(settings, clock),
+        )
+
+    @staticmethod
+    def _oidc_from(settings: Settings, clock: Callable[[], float]) -> OidcVerifier | None:
+        if not settings.oidc_issuer or not settings.oidc_audience:
+            return None
+        return OidcVerifier(
+            issuer=settings.oidc_issuer,
+            audience=settings.oidc_audience,
+            jwks_url=settings.oidc_jwks_url,
+            clock_skew=settings.clock_skew_seconds,
             clock=clock,
         )
 
@@ -175,6 +208,70 @@ class Gateway:
                 "task": request.task,
                 "expires_at": issued.expires_at.isoformat(),
             },
+        )
+        return issued
+
+    def authenticate_identity(self, id_token: str) -> User:
+        """Resolve an IdP ID token to a directory user (OIDC sign-in)."""
+        return self._identify(id_token)[0]
+
+    def _identify(self, id_token: str) -> tuple[User, IdentityClaims]:
+        if self.oidc is None:
+            raise AuthenticationError(
+                "OIDC sign-in is not configured (set AGENTWARDEN_OIDC_ISSUER)"
+            )
+        claim = self.settings.oidc_user_claim
+        try:
+            identity = self.oidc.verify(id_token, require_verified_email=claim == "email")
+        except AuthenticationError as exc:
+            self.audit.append("auth.failed", data={"reason": str(exc), "operation": "oidc"})
+            raise
+        value = identity.email if claim == "email" else identity.subject
+        user = self.directory.find_by_identity(claim=claim, value=value)
+        if user is None:
+            self.audit.append(
+                "auth.failed",
+                data={
+                    "reason": "no directory user for this identity",
+                    "operation": "oidc",
+                    "issuer": identity.issuer,
+                    "subject": identity.subject,
+                },
+            )
+            raise AuthenticationError("signed in, but this identity has no AgentWarden user")
+        return user, identity
+
+    def exchange_token(self, id_token: str, request: TokenRequest) -> IssuedToken:
+        """RFC 8693 token exchange: an IdP ID token becomes a scoped agent token."""
+        user, identity = self._identify(id_token)
+        token_hash = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
+        if self.settings.oidc_one_time_tokens:
+            now = self._clock()
+            self.db.execute("DELETE FROM used_id_tokens WHERE expires_at < ?", (now - 300,))
+            expires = float(identity.claims.get("exp", now + 3600))
+            first_use = self.db.execute(
+                "INSERT INTO used_id_tokens (token_hash, expires_at) VALUES (?, ?)"
+                " ON CONFLICT (token_hash) DO NOTHING",
+                (token_hash, expires),
+            )
+            if not first_use:
+                self.audit.append(
+                    "auth.failed",
+                    user_id=user.id,
+                    data={"reason": "ID token replayed", "operation": "token.exchange"},
+                )
+                raise AuthenticationError("this ID token has already been exchanged; sign in again")
+        try:
+            issued = self.issue_token(user, request)
+        except AgentWardenError:
+            if self.settings.oidc_one_time_tokens:  # a failed exchange doesn't burn the sign-in
+                self.db.execute("DELETE FROM used_id_tokens WHERE token_hash = ?", (token_hash,))
+            raise
+        self.audit.append(
+            "token.exchanged",
+            user_id=user.id,
+            agent_id=request.agent_id,
+            data={"jti": issued.jti, "idp": self.oidc.issuer if self.oidc else None},
         )
         return issued
 
@@ -267,6 +364,50 @@ class Gateway:
         )
         return agent
 
+    # ===================================================================== keys
+    def _ring(self) -> KeyRing:
+        if not isinstance(self.keys, KeyRing):
+            raise InvalidRequestError(
+                "key rotation needs a key ring (set AGENTWARDEN_SIGNING_KEY_DIR)"
+            )
+        return self.keys
+
+    def rotate_keys(self, actor: str = "admin") -> list[dict[str, Any]]:
+        """Start signing with a new key; the old one keeps verifying until its grace period ends."""
+        ring = self._ring()
+        previous = ring.kid
+        new = ring.rotate()
+        self.audit.append(
+            "keys.rotated", data={"by": actor, "new_kid": new.kid, "retired_kid": previous}
+        )
+        return self.key_status()
+
+    def prune_keys(self, actor: str = "admin") -> list[str]:
+        pruned = self._ring().prune()
+        if pruned:
+            self.audit.append("keys.pruned", data={"by": actor, "kids": pruned})
+        return pruned
+
+    def key_status(self) -> list[dict[str, Any]]:
+        if not isinstance(self.keys, KeyRing):
+            return [{"kid": self.keys.kid, "status": "active", "rotatable": False}]
+        grace = self.keys.grace_seconds
+        return [
+            {
+                "kid": e.kid,
+                "status": e.status,
+                "created_at": datetime.fromtimestamp(e.created_at, UTC).isoformat(
+                    timespec="seconds"
+                ),
+                "verifies_tokens_until": (
+                    datetime.fromtimestamp(e.retired_at + grace, UTC).isoformat(timespec="seconds")
+                    if e.status == "retired" and e.retired_at is not None
+                    else None
+                ),
+            }
+            for e in self.keys.entries()
+        ]
+
     def set_agent_scopes(self, agent_id: str, scopes: Sequence[str], actor: str = "admin") -> Agent:
         agent = self.registry.set_scope_ceiling(agent_id, scopes)
         self.audit.append(
@@ -308,8 +449,24 @@ class Gateway:
     # ============================================================ authorization
     def authorize(self, token: str, request: AuthorizeRequest) -> AuthorizationResult:
         claims = self._verify(token, context="authorize", tool=request.tool)
+        retry_after = self.agent_limiter.hit(claims.agent_id)
+        if retry_after is not None:
+            raise RateLimitedError(f"agent {claims.agent_id!r} is over its rate limit", retry_after)
         decision_id = _new_decision_id()
         outcome, tool, facts = self._decide(claims, request, decision_id)
+        receipt = None
+        if outcome.decision is Decision.ALLOW and tool is not None:
+            receipt = issue_receipt(
+                self.keys,
+                issuer=self.settings.issuer,
+                user_id=claims.user_id,
+                actor_chain=claims.actor_chain,
+                tool=tool.name,
+                args=request.args,
+                decision_id=decision_id,
+                ttl=self.settings.receipt_ttl,
+                now=self._clock(),
+            )
         result = AuthorizationResult(
             decision_id=decision_id,
             decision=outcome.decision,
@@ -320,6 +477,7 @@ class Gateway:
             approval_id=outcome.approval_id,
             user_id=claims.user_id,
             agent_id=claims.agent_id,
+            receipt=receipt,
         )
         self.audit.append(
             AUTHZ_EVENT,
@@ -454,6 +612,23 @@ class Gateway:
             args=request.args,
             reasons=outcome.reasons,
             risk_score=outcome.risk.score,
+            details={
+                "user_prompt": (request.user_prompt or "")[:1000] or None,
+                "actor_chain": list(claims.actor_chain),
+                "task": claims.task,
+                "risk_level": outcome.risk.level.value,
+                "signals": [
+                    {
+                        "name": s.name,
+                        "detector": s.detector,
+                        "weight": s.weight,
+                        "evidence": s.evidence[:300],
+                        "location": s.location,
+                    }
+                    for s in outcome.risk.signals[:12]
+                ],
+                "context_sources": [s.source for s in request.context][:20],
+            },
         )
         outcome.approval_id = approval.id
         self.audit.append(

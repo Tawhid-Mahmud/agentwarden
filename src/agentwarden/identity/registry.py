@@ -56,7 +56,7 @@ class AgentRegistry:
                     now,
                 ),
             )
-        except sqlite3.IntegrityError as exc:
+        except self._db.IntegrityError as exc:
             raise InvalidRequestError(f"agent {agent.id!r} already exists") from exc
         return self.require(agent.id)
 
@@ -113,8 +113,8 @@ class RevocationList:
 
     def revoke_token(self, jti: str, expires_at: float, reason: str = "") -> None:
         self._db.execute(
-            "INSERT OR IGNORE INTO revoked_tokens (jti, expires_at, revoked_at, reason)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO revoked_tokens (jti, expires_at, revoked_at, reason)"
+            " VALUES (?, ?, ?, ?) ON CONFLICT (jti) DO NOTHING",
             (jti, expires_at, _now_iso(), reason),
         )
 

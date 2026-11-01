@@ -27,11 +27,17 @@ class Settings:
     """
 
     db_path: str = "agentwarden.db"
+    #: PostgreSQL URL (postgresql://user:pass@host/db). Takes precedence over ``db_path`` and
+    #: lets several AgentWarden instances share state.
+    database_url: str | None = field(default=None, repr=False)
     policy_path: Path = DEFAULT_POLICY_PATH
     directory_path: Path = DEFAULT_DIRECTORY_PATH
     #: PEM-encoded Ed25519 private key. ``None`` means an ephemeral in-memory key
     #: (fine for tests and demos, but tokens die with the process).
     signing_key_path: Path | None = None
+    #: Directory holding a rotating key ring (see ``agentwarden keys``). Preferred over
+    #: ``signing_key_path``; created with a first key if empty.
+    signing_key_dir: Path | None = None
     issuer: str = "https://agentwarden.local"
     audience: str = "agentwarden"
     default_token_ttl: int = 900
@@ -43,6 +49,30 @@ class Settings:
     admin_key: str | None = field(default=None, repr=False)
     llm_judge_enabled: bool = False
     llm_judge_model: str = DEFAULT_LLM_JUDGE_MODEL
+    #: OpenID Connect issuer URL (e.g. https://accounts.google.com). Enables token exchange.
+    oidc_issuer: str | None = None
+    #: The OAuth client id AgentWarden is registered under at the IdP (the ID token audience).
+    oidc_audience: str | None = None
+    #: Override the JWKS URL instead of discovering it from the issuer.
+    oidc_jwks_url: str | None = None
+    #: How IdP identities map to directory users: "email" (verified email) or "sub".
+    oidc_user_claim: str = "email"
+    #: Demo-grade X-API-Key user authentication. Turn off once OIDC is configured.
+    api_keys_enabled: bool = True
+    #: Each ID token can be exchanged once (replays are refused across instances).
+    oidc_one_time_tokens: bool = True
+    #: Requests per minute per client IP to the API (0 disables).
+    rate_limit_per_ip: int = 600
+    #: Requests per minute per client IP to sign-in and token endpoints (0 disables).
+    rate_limit_sensitive_per_ip: int = 30
+    #: Failed authentications per minute per client IP before it is locked out (0 disables).
+    rate_limit_auth_failures_per_ip: int = 20
+    #: Authorization calls per minute per agent (0 disables).
+    rate_limit_per_agent: int = 300
+    #: Use the first X-Forwarded-For address as the client IP. Only behind a trusted proxy.
+    trust_proxy_headers: bool = False
+    #: Lifetime of authorization receipts handed to tools.
+    receipt_ttl: int = 60
 
     def __post_init__(self) -> None:
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
@@ -55,6 +85,36 @@ class Settings:
             raise ConfigurationError("approval_ttl must be at least 30 seconds")
         if self.admin_key is not None and len(self.admin_key) < 16:
             raise ConfigurationError("admin_key must be at least 16 characters")
+        if self.database_url and not self.database_url.startswith(("postgresql://", "postgres://")):
+            raise ConfigurationError("database_url must be a postgresql:// URL")
+        if self.signing_key_path and self.signing_key_dir:
+            raise ConfigurationError("set either signing_key_path or signing_key_dir, not both")
+        if self.oidc_issuer and not self.oidc_audience:
+            raise ConfigurationError("oidc_audience (the client id) is required with oidc_issuer")
+        if self.oidc_user_claim not in ("email", "sub"):
+            raise ConfigurationError("oidc_user_claim must be 'email' or 'sub'")
+        for name in (
+            "rate_limit_per_ip",
+            "rate_limit_sensitive_per_ip",
+            "rate_limit_auth_failures_per_ip",
+            "rate_limit_per_agent",
+        ):
+            if getattr(self, name) < 0:
+                raise ConfigurationError(f"{name} can't be negative (0 disables it)")
+        if not 5 <= self.receipt_ttl <= 600:
+            raise ConfigurationError("receipt_ttl must be between 5 and 600 seconds")
+        if not self.api_keys_enabled and not self.oidc_issuer:
+            raise ConfigurationError("disabling API keys requires OIDC, or no user could sign in")
+
+    @property
+    def database(self) -> str:
+        """What to open: the PostgreSQL URL if set, otherwise the SQLite path."""
+        return self.database_url or self.db_path
+
+    @property
+    def key_grace_seconds(self) -> int:
+        """How long a retired key keeps verifying tokens: the longest lifetime plus skew."""
+        return self.max_token_ttl + self.clock_skew_seconds
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -75,12 +135,15 @@ class Settings:
 
         base = cls()
         key_path = get("SIGNING_KEY_PATH")
+        key_dir = get("SIGNING_KEY_DIR")
         return replace(
             base,
             db_path=get("DB_PATH") or base.db_path,
+            database_url=get("DATABASE_URL"),
             policy_path=Path(get("POLICY_PATH") or base.policy_path),
             directory_path=Path(get("DIRECTORY_PATH") or base.directory_path),
             signing_key_path=Path(key_path) if key_path else None,
+            signing_key_dir=Path(key_dir) if key_dir else None,
             issuer=get("ISSUER") or base.issuer,
             audience=get("AUDIENCE") or base.audience,
             default_token_ttl=get_int("DEFAULT_TOKEN_TTL", base.default_token_ttl),
@@ -91,4 +154,20 @@ class Settings:
             admin_key=get("ADMIN_KEY"),
             llm_judge_enabled=(get("LLM_JUDGE") or "").lower() in _TRUE,
             llm_judge_model=get("LLM_JUDGE_MODEL") or base.llm_judge_model,
+            oidc_issuer=get("OIDC_ISSUER"),
+            oidc_audience=get("OIDC_AUDIENCE"),
+            oidc_jwks_url=get("OIDC_JWKS_URL"),
+            oidc_user_claim=get("OIDC_USER_CLAIM") or base.oidc_user_claim,
+            api_keys_enabled=(get("API_KEYS") or "true").lower() in _TRUE,
+            oidc_one_time_tokens=(get("OIDC_ONE_TIME_TOKENS") or "true").lower() in _TRUE,
+            rate_limit_per_ip=get_int("RATE_LIMIT_PER_IP", base.rate_limit_per_ip),
+            rate_limit_sensitive_per_ip=get_int(
+                "RATE_LIMIT_SENSITIVE_PER_IP", base.rate_limit_sensitive_per_ip
+            ),
+            rate_limit_auth_failures_per_ip=get_int(
+                "RATE_LIMIT_AUTH_FAILURES_PER_IP", base.rate_limit_auth_failures_per_ip
+            ),
+            rate_limit_per_agent=get_int("RATE_LIMIT_PER_AGENT", base.rate_limit_per_agent),
+            trust_proxy_headers=(get("TRUST_PROXY_HEADERS") or "").lower() in _TRUE,
+            receipt_ttl=get_int("RECEIPT_TTL", base.receipt_ttl),
         )

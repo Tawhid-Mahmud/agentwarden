@@ -11,13 +11,17 @@ Authentication schemes:
 from __future__ import annotations
 
 import hmac
+import json
+import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib import resources
 from typing import Annotated, Any, Literal
+from urllib.parse import parse_qs
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from pydantic import BaseModel, Field, ValidationError
 
 from agentwarden import __version__
 from agentwarden.approvals import APPROVER_ROLE, ApprovalRequest, ApprovalStatus
@@ -30,6 +34,7 @@ from agentwarden.errors import (
     InvalidRequestError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
 )
 from agentwarden.gateway import Gateway
 from agentwarden.models import (
@@ -42,12 +47,14 @@ from agentwarden.models import (
     TokenRequest,
     User,
 )
+from agentwarden.ratelimit import RateLimiter
 
 _STATUS = {
     AuthenticationError: 401,
     PermissionDeniedError: 403,
     NotFoundError: 404,
     ApprovalError: 409,
+    RateLimitedError: 429,
     InvalidRequestError: 400,
     ConfigurationError: 500,
 }
@@ -70,6 +77,50 @@ class RevokeBody(BaseModel):
     jti: str | None = Field(default=None, max_length=64)
     subject: str | None = Field(default=None, max_length=100)
     reason: str = Field(default="", max_length=500)
+
+
+# OAuth URNs from RFC 8693, not secrets.
+#: Endpoints that mint credentials or check them: stricter per-IP limits apply.
+SENSITIVE_PATHS = frozenset({"/v1/tokens", "/v1/token/exchange", "/v1/tokens/delegate", "/v1/me"})
+
+TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange"  # noqa: S105  # nosec B105
+ISSUED_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"  # noqa: S105  # nosec B105
+SUBJECT_TOKEN_TYPES = {
+    "urn:ietf:params:oauth:token-type:id_token",
+    "urn:ietf:params:oauth:token-type:jwt",
+}
+
+
+async def _read_params(request: Request) -> dict[str, str]:
+    """Read a form-encoded or JSON body into single-valued string parameters."""
+    body = await request.body()
+    if len(body) > 64 * 1024:
+        return {}
+    if request.headers.get("content-type", "").startswith("application/json"):
+        try:
+            data = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return {}
+        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    parsed = parse_qs(body.decode("utf-8", errors="replace"), keep_blank_values=False)
+    return {k: v[0] for k, v in parsed.items() if v}
+
+
+#: The console renders attacker-influenced text (tool arguments, injected content). The policy
+#: forbids inline script and every non-same-origin load, so even a rendering bug can't run code.
+CONSOLE_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+)
+
+
+def _console_asset(name: str, media_type: str) -> Response:
+    content = (resources.files("agentwarden.api") / "console" / name).read_bytes()
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Security-Policy": CONSOLE_CSP, "Cache-Control": "no-cache"},
+    )
 
 
 def _error_status(exc: AgentWardenError) -> int:
@@ -97,12 +148,24 @@ def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
 
 
 def current_user(
-    gateway: GatewayDep, x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None
+    gateway: GatewayDep,
+    x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None,
+    authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    user = gateway.directory.authenticate_api_key(x_api_key or "")
-    if user is None:
-        raise AuthenticationError("missing or invalid X-API-Key")
-    return user
+    """A human user: an IdP ID token (``Authorization: Bearer``) or, if enabled, an API key."""
+    if authorization and gateway.oidc is not None:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token.strip():
+            return gateway.authenticate_identity(token.strip())
+    if x_api_key and gateway.settings.api_keys_enabled:
+        user = gateway.directory.authenticate_api_key(x_api_key)
+        if user is not None:
+            return user
+    accepted = [
+        *(["Authorization: Bearer <ID token>"] if gateway.oidc is not None else []),
+        *(["X-API-Key"] if gateway.settings.api_keys_enabled else []),
+    ]
+    raise AuthenticationError(f"sign in with {' or '.join(accepted)}")
 
 
 def require_admin(
@@ -155,11 +218,54 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
     async def _handle(_: Request, exc: AgentWardenError) -> JSONResponse:
         status = _error_status(exc)
         headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+        if isinstance(exc, RateLimitedError):
+            headers = {"Retry-After": str(math.ceil(exc.retry_after))}
         return JSONResponse(
             status_code=status,
             content={"error": type(exc).__name__, "detail": str(exc)},
             headers=headers,
         )
+
+    settings_ = app.state.gateway.settings
+    ip_limiter = RateLimiter(settings_.rate_limit_per_ip)
+    sensitive_limiter = RateLimiter(settings_.rate_limit_sensitive_per_ip)
+    failure_limiter = RateLimiter(settings_.rate_limit_auth_failures_per_ip)
+
+    def client_ip(request: Request) -> str:
+        if settings_.trust_proxy_headers:
+            forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            if forwarded:
+                return forwarded
+        return request.client.host if request.client else "unknown"
+
+    def too_many(retry_after: float, why: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "RateLimitedError", "detail": why},
+            headers={"Retry-After": str(math.ceil(retry_after))},
+        )
+
+    @app.middleware("http")
+    async def _rate_limit(request: Request, call_next: Any) -> Response:
+        path = request.url.path
+        if not path.startswith("/v1/"):
+            passthrough: Response = await call_next(request)
+            return passthrough
+        ip = client_ip(request)
+        locked = failure_limiter.peek(ip)
+        if locked is not None:
+            return too_many(locked, "too many failed sign-ins from this address; try again later")
+        retry = ip_limiter.hit(ip)
+        if retry is None and path in SENSITIVE_PATHS:
+            retry = sensitive_limiter.hit(ip)
+        if retry is not None:
+            return too_many(retry, "too many requests from this address")
+        response: Response = await call_next(request)
+        if response.status_code == 401 or (
+            path == "/v1/token/exchange" and response.status_code == 400
+        ):
+            failure_limiter.hit(ip)
+        return response
 
     @app.middleware("http")
     async def _security_headers(request: Request, call_next: Any) -> Response:
@@ -187,6 +293,72 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         response.headers.update(_NO_STORE)
         return gateway.issue_token(user, body)
 
+    @app.post("/v1/token/exchange", tags=["tokens"], response_model=None)
+    async def token_exchange(request: Request, gateway: GatewayDep) -> JSONResponse:
+        """RFC 8693 token exchange: trade an IdP ID token for a scoped agent token.
+
+        Form-encoded (standard) or JSON. Parameters: ``grant_type`` (token-exchange),
+        ``subject_token`` (the ID token), ``subject_token_type`` (id_token or jwt),
+        ``scope`` (space-separated) and the agent as ``audience=agent:<id>`` or ``agent_id``.
+        Optional: ``task``, ``ttl_seconds``.
+        """
+        params = await _read_params(request)
+
+        def oauth_error(error: str, description: str, status: int = 400) -> JSONResponse:
+            return JSONResponse(
+                {"error": error, "error_description": description},
+                status_code=status,
+                headers=_NO_STORE,
+            )
+
+        if params.get("grant_type") != TOKEN_EXCHANGE_GRANT:
+            return oauth_error(
+                "unsupported_grant_type", f"grant_type must be {TOKEN_EXCHANGE_GRANT}"
+            )
+        if params.get("subject_token_type") not in SUBJECT_TOKEN_TYPES:
+            return oauth_error("invalid_request", "subject_token_type must be an id_token or jwt")
+        subject_token = params.get("subject_token")
+        if not subject_token:
+            return oauth_error("invalid_request", "subject_token is required")
+        audience = params.get("audience", "")
+        agent_id = params.get("agent_id") or (
+            audience.removeprefix("agent:") if audience.startswith("agent:") else ""
+        )
+        scopes = params.get("scope", "").split()
+        if not agent_id:
+            return oauth_error(
+                "invalid_target", "name the agent with audience=agent:<id> or agent_id"
+            )
+        if not scopes:
+            return oauth_error("invalid_scope", "request at least one scope")
+        try:
+            ttl = int(params["ttl_seconds"]) if params.get("ttl_seconds") else None
+            token_request = TokenRequest(
+                agent_id=agent_id, scopes=scopes, task=params.get("task"), ttl_seconds=ttl
+            )
+        except (ValueError, ValidationError) as exc:
+            return oauth_error("invalid_request", str(exc).splitlines()[0])
+        try:
+            issued = gateway.exchange_token(subject_token, token_request)
+        except AuthenticationError as exc:
+            return oauth_error("invalid_grant", str(exc))
+        except NotFoundError as exc:
+            return oauth_error("invalid_target", str(exc))
+        except (PermissionDeniedError, InvalidRequestError) as exc:
+            return oauth_error("invalid_scope", str(exc))
+        return JSONResponse(
+            {
+                "access_token": issued.access_token,
+                "issued_token_type": ISSUED_TOKEN_TYPE,
+                "token_type": "Bearer",  # nosec B105 - OAuth token type, not a secret
+                "expires_in": issued.expires_in,
+                "scope": " ".join(issued.scope),
+                "denied_scopes": issued.denied_scopes,
+                "actor_chain": issued.actor_chain,
+            },
+            headers=_NO_STORE,
+        )
+
     @app.post("/v1/tokens/delegate", tags=["tokens"])
     def delegate(
         body: DelegationRequest, token: TokenDep, gateway: GatewayDep, response: Response
@@ -210,11 +382,25 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         return gateway.authorize(token, body)
 
     # ------------------------------------------------------------- approvals
+    @app.get("/v1/me", tags=["approvals"])
+    def me(user: UserDep) -> dict[str, Any]:
+        """Who is signed in (used by the approver console)."""
+        return {
+            "id": user.id,
+            "name": user.name or user.id,
+            "email": user.email,
+            "roles": user.roles,
+            "approver": APPROVER_ROLE in user.roles,
+        }
+
     @app.get("/v1/approvals", tags=["approvals"])
     def list_approvals(
-        _: ApproverDep, gateway: GatewayDep, status: ApprovalStatus | None = None
+        _: ApproverDep,
+        gateway: GatewayDep,
+        status: ApprovalStatus | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> list[ApprovalRequest]:
-        return gateway.approvals.list(status)
+        return gateway.approvals.list(status)[:limit]
 
     @app.get("/v1/approvals/{approval_id}", tags=["approvals"])
     def get_approval(approval_id: str, user: UserDep, gateway: GatewayDep) -> ApprovalRequest:
@@ -234,6 +420,23 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         approval_id: str, body: ReviewBody, user: ApproverDep, gateway: GatewayDep
     ) -> ApprovalRequest:
         return gateway.deny_approval(approval_id, user, body.note)
+
+    # --------------------------------------------------------------- console
+    @app.get("/console", include_in_schema=False, response_model=None)
+    def console_page() -> Response:
+        return _console_asset("index.html", "text/html; charset=utf-8")
+
+    @app.get("/console/", include_in_schema=False, response_model=None)
+    def console_slash() -> RedirectResponse:
+        return RedirectResponse("/console")
+
+    @app.get("/console/app.js", include_in_schema=False, response_model=None)
+    def console_js() -> Response:
+        return _console_asset("app.js", "text/javascript; charset=utf-8")
+
+    @app.get("/console/app.css", include_in_schema=False, response_model=None)
+    def console_css() -> Response:
+        return _console_asset("app.css", "text/css; charset=utf-8")
 
     # ----------------------------------------------------------------- admin
     @app.get("/v1/agents", tags=["admin"])
@@ -274,6 +477,21 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         else:
             gateway.revoke_subject(str(body.subject), body.reason, actor)
         return Response(status_code=204)
+
+    @app.get("/v1/admin/keys", tags=["admin"])
+    def list_keys(_: AdminDep, gateway: GatewayDep) -> list[dict[str, Any]]:
+        """Signing keys and their lifecycle (no private material)."""
+        return gateway.key_status()
+
+    @app.post("/v1/admin/keys/rotate", tags=["admin"])
+    def rotate_keys(actor: AdminDep, gateway: GatewayDep) -> list[dict[str, Any]]:
+        """Start signing with a new key. Outstanding tokens stay valid until they expire."""
+        return gateway.rotate_keys(actor)
+
+    @app.post("/v1/admin/keys/prune", tags=["admin"])
+    def prune_keys(actor: AdminDep, gateway: GatewayDep) -> dict[str, list[str]]:
+        """Delete private keys whose grace period has ended."""
+        return {"pruned": gateway.prune_keys(actor)}
 
     @app.get("/v1/audit", tags=["audit"])
     def audit_events(
