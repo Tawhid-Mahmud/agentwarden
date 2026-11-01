@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentwarden"
-version = "0.1.0"
+version = "0.2.0"
 description = "Identity & access management for AI agents: delegated scoped tokens, policy-as-code tool authorization, prompt-injection-aware risk scoring, human approvals and a tamper-evident audit trail."
 readme = "README.md"
 license = "MIT"
