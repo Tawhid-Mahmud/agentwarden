@@ -105,11 +105,14 @@ def test_forged_checkpoints_rejected(audit: AuditLog) -> None:
     assert not audit.verify_checkpoint({**checkpoint, "seq": 1})
     assert not audit.verify_checkpoint({**checkpoint, "signature": "AAAA"})
     assert not audit.verify_checkpoint({**checkpoint, "kid": "other"})
-    other = AuditLog(Database(), keys=KeyManager.generate())
-    assert not other.verify_checkpoint(checkpoint)
-    assert AuditLog(Database()).verify_checkpoint(checkpoint) is False
-    with pytest.raises(RuntimeError):
-        AuditLog(Database()).checkpoint()
+    scratch = Database()
+    try:
+        assert not AuditLog(scratch, keys=KeyManager.generate()).verify_checkpoint(checkpoint)
+        assert AuditLog(scratch).verify_checkpoint(checkpoint) is False
+        with pytest.raises(RuntimeError):
+            AuditLog(scratch).checkpoint()
+    finally:
+        scratch.close()
 
 
 def test_query_filters_and_activity(audit: AuditLog, clock: FakeClock) -> None:

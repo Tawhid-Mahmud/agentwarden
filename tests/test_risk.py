@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import httpx
 import pytest
 
+from agentwarden.config import DEFAULT_CORPUS_PATH
 from agentwarden.directory import Directory
 from agentwarden.evaluation import evaluate, load_corpus, obfuscate
 from agentwarden.models import ContextSegment, RiskLevel, RiskSignal, SideEffect, Tool
@@ -34,7 +34,7 @@ from agentwarden.risk.text import (
     normalize_path,
 )
 
-CORPUS = Path(__file__).parent.parent / "evals" / "injection_corpus.yaml"
+CORPUS = DEFAULT_CORPUS_PATH
 
 # Secrets are assembled at runtime so no credential-shaped literal lives in the repository.
 AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"

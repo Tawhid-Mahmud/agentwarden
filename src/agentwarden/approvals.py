@@ -70,10 +70,12 @@ def call_hash(user_id: str, actor_chain: Sequence[str], tool: str, args: Mapping
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-def _preview(args: Mapping[str, Any]) -> dict[str, Any]:
+def preview_args(args: Mapping[str, Any], limit: int = _PREVIEW_LIMIT) -> dict[str, Any]:
+    """Redact secrets and truncate long strings, for display and audit storage."""
+
     def shorten(value: Any) -> Any:
-        if isinstance(value, str) and len(value) > _PREVIEW_LIMIT:
-            return value[:_PREVIEW_LIMIT] + f"… [{len(value)} chars]"
+        if isinstance(value, str) and len(value) > limit:
+            return value[:limit] + f"… [{len(value)} chars]"
         if isinstance(value, dict):
             return {k: shorten(v) for k, v in value.items()}
         if isinstance(value, list):
@@ -133,7 +135,7 @@ class ApprovalQueue:
                 actor_chain[0],
                 tool,
                 call_hash(user_id, actor_chain, tool, args),
-                json.dumps(_preview(args), default=str),
+                json.dumps(preview_args(args), default=str),
                 json.dumps(list(reasons)),
                 risk_score,
                 now,

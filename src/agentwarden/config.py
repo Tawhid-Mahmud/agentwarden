@@ -12,6 +12,7 @@ from agentwarden.errors import ConfigurationError
 DATA_DIR = Path(__file__).parent / "data"
 DEFAULT_POLICY_PATH = DATA_DIR / "policy.yaml"
 DEFAULT_DIRECTORY_PATH = DATA_DIR / "directory.yaml"
+DEFAULT_CORPUS_PATH = DATA_DIR / "injection_corpus.yaml"
 DEFAULT_LLM_JUDGE_MODEL = "claude-opus-5-5"
 
 _TRUE = {"1", "true", "yes", "on"}

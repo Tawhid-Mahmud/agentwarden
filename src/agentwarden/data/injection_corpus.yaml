@@ -1,4 +1,4 @@
-# Labeled prompt-injection corpus for `agentwarden eval`.
+# Labeled prompt-injection corpus for `agentwarden eval` (bundled as package data).
 #
 # This is a small, hand-written REGRESSION suite, not a benchmark. Each sample is treated as
 # untrusted content an agent read before calling an external-sink tool. `hidden` samples are
