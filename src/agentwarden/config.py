@@ -32,6 +32,9 @@ class Settings:
     #: PEM-encoded Ed25519 private key. ``None`` means an ephemeral in-memory key
     #: (fine for tests and demos, but tokens die with the process).
     signing_key_path: Path | None = None
+    #: Directory holding a rotating key ring (see ``agentwarden keys``). Preferred over
+    #: ``signing_key_path``; created with a first key if empty.
+    signing_key_dir: Path | None = None
     issuer: str = "https://agentwarden.local"
     audience: str = "agentwarden"
     default_token_ttl: int = 900
@@ -65,12 +68,19 @@ class Settings:
             raise ConfigurationError("approval_ttl must be at least 30 seconds")
         if self.admin_key is not None and len(self.admin_key) < 16:
             raise ConfigurationError("admin_key must be at least 16 characters")
+        if self.signing_key_path and self.signing_key_dir:
+            raise ConfigurationError("set either signing_key_path or signing_key_dir, not both")
         if self.oidc_issuer and not self.oidc_audience:
             raise ConfigurationError("oidc_audience (the client id) is required with oidc_issuer")
         if self.oidc_user_claim not in ("email", "sub"):
             raise ConfigurationError("oidc_user_claim must be 'email' or 'sub'")
         if not self.api_keys_enabled and not self.oidc_issuer:
             raise ConfigurationError("disabling API keys requires OIDC, or no user could sign in")
+
+    @property
+    def key_grace_seconds(self) -> int:
+        """How long a retired key keeps verifying tokens: the longest lifetime plus skew."""
+        return self.max_token_ttl + self.clock_skew_seconds
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:
@@ -91,12 +101,14 @@ class Settings:
 
         base = cls()
         key_path = get("SIGNING_KEY_PATH")
+        key_dir = get("SIGNING_KEY_DIR")
         return replace(
             base,
             db_path=get("DB_PATH") or base.db_path,
             policy_path=Path(get("POLICY_PATH") or base.policy_path),
             directory_path=Path(get("DIRECTORY_PATH") or base.directory_path),
             signing_key_path=Path(key_path) if key_path else None,
+            signing_key_dir=Path(key_dir) if key_dir else None,
             issuer=get("ISSUER") or base.issuer,
             audience=get("AUDIENCE") or base.audience,
             default_token_ttl=get_int("DEFAULT_TOKEN_TTL", base.default_token_ttl),

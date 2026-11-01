@@ -9,7 +9,7 @@ import os
 import stat
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -33,10 +33,38 @@ def jwk_thumbprint(jwk: dict[str, str]) -> str:
     return b64url(hashlib.sha256(canonical.encode("ascii")).digest())
 
 
+class SigningKeys(Protocol):
+    """What token issuance and audit checkpoints need: one signing key, many verification keys."""
+
+    @property
+    def kid(self) -> str: ...
+
+    @property
+    def private_key(self) -> Ed25519PrivateKey: ...
+
+    def sign(self, data: bytes) -> bytes: ...
+
+    def jwks(self) -> dict[str, Any]: ...
+
+    def verification_key(self, kid: str) -> Ed25519PublicKey | None:
+        """Key that may still verify *tokens* with this kid (None if unknown or expired)."""
+        ...
+
+    def any_public_key(self, kid: str) -> Ed25519PublicKey | None:
+        """Any public key ever used with this kid (for old audit checkpoints)."""
+        ...
+
+
+def public_key_from_jwk(jwk: dict[str, Any]) -> Ed25519PublicKey:
+    if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519" or not isinstance(jwk.get("x"), str):
+        raise ConfigurationError("expected an Ed25519 OKP public JWK")
+    return Ed25519PublicKey.from_public_bytes(b64url_decode(jwk["x"]))
+
+
 class KeyManager:
     """Holds the gateway's Ed25519 key pair.
 
-    v0.1 uses a single active key. Rotation with multiple published keys is on the roadmap (v0.2).
+    A single key. For rotation with several published keys, use ``KeyRing``.
     The ``kid`` is derived from the public key, so a rotated key always gets a new id.
     """
 
@@ -108,5 +136,14 @@ class KeyManager:
             return False
         return True
 
+    def public_jwk(self) -> dict[str, Any]:
+        return {**self._jwk, "kid": self.kid, "alg": "EdDSA", "use": "sig"}
+
     def jwks(self) -> dict[str, Any]:
-        return {"keys": [{**self._jwk, "kid": self.kid, "alg": "EdDSA", "use": "sig"}]}
+        return {"keys": [self.public_jwk()]}
+
+    def verification_key(self, kid: str) -> Ed25519PublicKey | None:
+        return self.public_key if kid == self.kid else None
+
+    def any_public_key(self, kid: str) -> Ed25519PublicKey | None:
+        return self.verification_key(kid)

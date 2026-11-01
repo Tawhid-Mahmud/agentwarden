@@ -30,10 +30,12 @@ from agentwarden.errors import AgentWardenError, AuthenticationError, InvalidReq
 from agentwarden.identity import (
     AgentRegistry,
     KeyManager,
+    KeyRing,
     RevocationList,
     TokenClaims,
     TokenService,
 )
+from agentwarden.identity.keys import SigningKeys
 from agentwarden.identity.oidc import OidcVerifier
 from agentwarden.identity.scopes import covered_by_any
 from agentwarden.models import (
@@ -79,7 +81,7 @@ class Gateway:
         directory: Directory,
         registry: AgentRegistry,
         revocations: RevocationList,
-        keys: KeyManager,
+        keys: SigningKeys,
         tokens: TokenService,
         policy: PolicyEngine,
         risk: RiskEngine,
@@ -118,7 +120,13 @@ class Gateway:
         registry = AgentRegistry(db)
         registry.seed(directory.seed_agents)
         revocations = RevocationList(db, clock=clock)
-        keys = KeyManager.load_or_generate(settings.signing_key_path)
+        keys: SigningKeys
+        if settings.signing_key_dir is not None:
+            keys = KeyRing.open(
+                settings.signing_key_dir, grace_seconds=settings.key_grace_seconds, clock=clock
+            )
+        else:
+            keys = KeyManager.load_or_generate(settings.signing_key_path)
         audit = AuditLog(db, keys=keys, clock=clock)
         detectors = list(extra_detectors)
         if settings.llm_judge_enabled:
@@ -322,6 +330,50 @@ class Gateway:
             data={"by": actor, "reason": reason},
         )
         return agent
+
+    # ===================================================================== keys
+    def _ring(self) -> KeyRing:
+        if not isinstance(self.keys, KeyRing):
+            raise InvalidRequestError(
+                "key rotation needs a key ring (set AGENTWARDEN_SIGNING_KEY_DIR)"
+            )
+        return self.keys
+
+    def rotate_keys(self, actor: str = "admin") -> list[dict[str, Any]]:
+        """Start signing with a new key; the old one keeps verifying until its grace period ends."""
+        ring = self._ring()
+        previous = ring.kid
+        new = ring.rotate()
+        self.audit.append(
+            "keys.rotated", data={"by": actor, "new_kid": new.kid, "retired_kid": previous}
+        )
+        return self.key_status()
+
+    def prune_keys(self, actor: str = "admin") -> list[str]:
+        pruned = self._ring().prune()
+        if pruned:
+            self.audit.append("keys.pruned", data={"by": actor, "kids": pruned})
+        return pruned
+
+    def key_status(self) -> list[dict[str, Any]]:
+        if not isinstance(self.keys, KeyRing):
+            return [{"kid": self.keys.kid, "status": "active", "rotatable": False}]
+        grace = self.keys.grace_seconds
+        return [
+            {
+                "kid": e.kid,
+                "status": e.status,
+                "created_at": datetime.fromtimestamp(e.created_at, UTC).isoformat(
+                    timespec="seconds"
+                ),
+                "verifies_tokens_until": (
+                    datetime.fromtimestamp(e.retired_at + grace, UTC).isoformat(timespec="seconds")
+                    if e.status == "retired" and e.retired_at is not None
+                    else None
+                ),
+            }
+            for e in self.keys.entries()
+        ]
 
     def set_agent_scopes(self, agent_id: str, scopes: Sequence[str], actor: str = "admin") -> Agent:
         agent = self.registry.set_scope_ceiling(agent_id, scopes)

@@ -6,13 +6,15 @@ import argparse
 import getpass
 import json
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from agentwarden import __version__
 from agentwarden.config import DEFAULT_CORPUS_PATH, Settings
-from agentwarden.errors import AgentWardenError
+from agentwarden.errors import AgentWardenError, ConfigurationError
 
 
 def _settings(args: argparse.Namespace) -> Settings:
@@ -56,6 +58,44 @@ def cmd_keygen(args: argparse.Namespace) -> int:
     print(f"wrote Ed25519 signing key to {path} (mode 0600)")
     print(f"kid: {keys.kid}")
     print(f"export AGENTWARDEN_SIGNING_KEY_PATH={path}")
+    return 0
+
+
+def _ring(args: argparse.Namespace) -> Any:
+    from agentwarden.identity import KeyRing
+
+    settings = Settings.from_env()
+    directory = args.dir or settings.signing_key_dir
+    if directory is None:
+        raise ConfigurationError("give --dir or set AGENTWARDEN_SIGNING_KEY_DIR")
+    return KeyRing.open(
+        directory, grace_seconds=settings.key_grace_seconds, create=args.command_name == "rotate"
+    )
+
+
+def _print_keys(ring: Any) -> None:
+    for entry in ring.entries():
+        until = ""
+        if entry.status == "retired" and entry.retired_at is not None:
+            left = max(0, int(entry.retired_at + ring.grace_seconds - time.time()))
+            until = f"  verifies tokens for {left}s more"
+        print(f"{entry.status:<8} {entry.kid}{until}")
+
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    from agentwarden.identity.keyring import MANIFEST
+
+    directory = args.dir or Settings.from_env().signing_key_dir
+    existed = directory is not None and (Path(directory) / MANIFEST).exists()
+    ring = _ring(args)
+    if args.command_name == "rotate":
+        if existed:  # a brand-new ring was just created with its first key
+            ring.rotate()
+        print(f"active key is now {ring.kid}")
+    elif args.command_name == "prune":
+        pruned = ring.prune()
+        print(f"pruned {len(pruned)} key(s)" + (": " + ", ".join(pruned) if pruned else ""))
+    _print_keys(ring)
     return 0
 
 
@@ -254,6 +294,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("keygen", help="create an Ed25519 signing key")
     p.add_argument("--out", default="keys/signing-key.pem")
     p.set_defaults(func=cmd_keygen)
+
+    keys = sub.add_parser("keys", help="signing-key ring: rotate, list, prune")
+    keys_sub = keys.add_subparsers(dest="command_name", required=True)
+    for name, text in (
+        ("list", "show keys and their status"),
+        ("rotate", "create a new active key (creates the ring if needed)"),
+        ("prune", "delete private keys whose grace period is over"),
+    ):
+        p = keys_sub.add_parser(name, help=text)
+        p.add_argument("--dir", help="key ring directory (default: AGENTWARDEN_SIGNING_KEY_DIR)")
+        p.set_defaults(func=cmd_keys)
 
     p = sub.add_parser("hash-key", help="hash a user API key for directory.yaml")
     p.add_argument(

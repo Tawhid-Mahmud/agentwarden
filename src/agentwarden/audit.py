@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from agentwarden.identity.keys import KeyManager, b64url, b64url_decode
+from cryptography.exceptions import InvalidSignature
+
+from agentwarden.identity.keys import SigningKeys, b64url, b64url_decode
 from agentwarden.models import AuditEvent
 from agentwarden.risk.detectors import redact_obj
 from agentwarden.storage import Database
@@ -92,7 +94,7 @@ class AuditLog:
     def __init__(
         self,
         db: Database,
-        keys: KeyManager | None = None,
+        keys: SigningKeys | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._db = db
@@ -209,14 +211,18 @@ class AuditLog:
 
     def verify_checkpoint(self, checkpoint: dict[str, Any]) -> bool:
         """True if the checkpoint is authentic *and* the log still contains that exact head."""
-        if self._keys is None or checkpoint.get("kid") != self._keys.kid:
+        kid = checkpoint.get("kid")
+        public_key = self._keys.any_public_key(kid) if self._keys and isinstance(kid, str) else None
+        if public_key is None:
             return False
         body = {k: checkpoint.get(k) for k in ("seq", "hash", "ts")}
         try:
             signature = b64url_decode(str(checkpoint["signature"]))
         except (KeyError, ValueError):
             return False
-        if not self._keys.verify(signature, canonical_json(body).encode("utf-8")):
+        try:
+            public_key.verify(signature, canonical_json(body).encode("utf-8"))
+        except InvalidSignature:
             return False
         if body["seq"] == 0:
             return True

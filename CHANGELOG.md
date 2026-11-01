@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Signing-key rotation**: a key ring (`AGENTWARDEN_SIGNING_KEY_DIR`) with one active key, retired
+  keys that keep verifying tokens for one maximum token lifetime, and pruning that deletes retired
+  private keys while keeping their public halves for audit checkpoints. The JWKS publishes every key
+  that still verifies tokens. Running instances pick up rotations without a restart. Managed with
+  `agentwarden keys rotate|list|prune` or `/v1/admin/keys`, and rotations are audited.
 - **OIDC sign-in and RFC 8693 token exchange** (`POST /v1/token/exchange`): users exchange an ID
   token from their identity provider for a scoped agent token. Verification accepts asymmetric
   algorithms only, checks issuer, audience, `azp` and expiry, discovers and rotates IdP keys (with a

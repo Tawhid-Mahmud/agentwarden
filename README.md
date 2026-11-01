@@ -117,8 +117,7 @@ delegation, the kill switch, audit tampering and least-privilege findings. An ex
 
 ```bash
 export AGENTWARDEN_ADMIN_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-agentwarden keygen --out keys/signing-key.pem          # persistent Ed25519 key (0600)
-export AGENTWARDEN_SIGNING_KEY_PATH=keys/signing-key.pem
+export AGENTWARDEN_SIGNING_KEY_DIR=keys                # rotating Ed25519 key ring, created on first start
 agentwarden serve                                      # http://127.0.0.1:8000/docs
 ```
 
@@ -155,7 +154,19 @@ curl -s localhost:8000/v1/authorize -H "Authorization: Bearer $TOKEN" -H "conten
 }
 ```
 
-Or with Docker: `docker compose run --rm agentwarden agentwarden keygen --out /keys/signing-key.pem && docker compose up --build`.
+Or with Docker: `docker compose up --build`.
+
+**Rotating the signing key** never breaks live tokens. The new key signs from then on, the old one
+keeps verifying until the longest token lifetime has passed, and other running instances pick up the
+change within seconds:
+
+```bash
+agentwarden keys rotate      # or POST /v1/admin/keys/rotate
+agentwarden keys list        # active / retired (with time left) / pruned
+agentwarden keys prune       # delete retired private keys after their grace period
+```
+
+Pruned keys keep their public half, so audit checkpoints they signed stay verifiable.
 
 ### 3. Guard your agent's tools with the SDK
 
@@ -306,7 +317,7 @@ src/agentwarden/
 ## Status & limitations
 
 v0.1 is a working MVP for learning, demos and evaluation, and has **not been hardened for
-production**. Single-node SQLite, one signing key and no rate
+production**. Single-node SQLite and no rate
 limiting. All of these are on the [roadmap](docs/PROJECT_PLAN.md). Heuristic detection can be
 evaded; see the [threat model](docs/THREAT_MODEL.md) for what is and isn't covered. Report
 security issues as described in [SECURITY.md](SECURITY.md).

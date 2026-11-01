@@ -379,6 +379,21 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
             gateway.revoke_subject(str(body.subject), body.reason, actor)
         return Response(status_code=204)
 
+    @app.get("/v1/admin/keys", tags=["admin"])
+    def list_keys(_: AdminDep, gateway: GatewayDep) -> list[dict[str, Any]]:
+        """Signing keys and their lifecycle (no private material)."""
+        return gateway.key_status()
+
+    @app.post("/v1/admin/keys/rotate", tags=["admin"])
+    def rotate_keys(actor: AdminDep, gateway: GatewayDep) -> list[dict[str, Any]]:
+        """Start signing with a new key. Outstanding tokens stay valid until they expire."""
+        return gateway.rotate_keys(actor)
+
+    @app.post("/v1/admin/keys/prune", tags=["admin"])
+    def prune_keys(actor: AdminDep, gateway: GatewayDep) -> dict[str, list[str]]:
+        """Delete private keys whose grace period has ended."""
+        return {"pruned": gateway.prune_keys(actor)}
+
     @app.get("/v1/audit", tags=["audit"])
     def audit_events(
         _: AdminDep,

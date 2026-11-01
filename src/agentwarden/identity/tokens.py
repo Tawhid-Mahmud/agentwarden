@@ -35,7 +35,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agentwarden.config import Settings
 from agentwarden.errors import AuthenticationError, DelegationError, PermissionDeniedError
-from agentwarden.identity.keys import KeyManager
+from agentwarden.identity.keys import SigningKeys
 from agentwarden.identity.registry import RevocationList
 from agentwarden.identity.scopes import attenuate, covered_by_any, dedupe, validate_scope
 from agentwarden.models import Agent, IssuedToken, User
@@ -104,7 +104,7 @@ def _parse_act(act: Any, max_depth: int) -> tuple[str, ...]:
 class TokenService:
     def __init__(
         self,
-        keys: KeyManager,
+        keys: SigningKeys,
         settings: Settings,
         revocations: RevocationList,
         clock: Callable[[], float] = time.time,
@@ -193,12 +193,14 @@ class TokenService:
             raise AuthenticationError("malformed token") from exc
         if header.get("alg") != ALGORITHM:
             raise AuthenticationError("unsupported token algorithm")
-        if header.get("kid") != self._keys.kid:
+        kid = header.get("kid")
+        verification_key = self._keys.verification_key(kid) if isinstance(kid, str) else None
+        if verification_key is None:
             raise AuthenticationError("token signed by an unknown key")
         try:
             payload = jwt.decode(
                 token,
-                self._keys.public_key,
+                verification_key,
                 algorithms=[ALGORITHM],
                 audience=self._settings.audience,
                 issuer=self._settings.issuer,

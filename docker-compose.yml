@@ -1,7 +1,6 @@
 # Local deployment with a persistent signing key and audit database.
 #
 #   export AGENTWARDEN_ADMIN_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-#   docker compose run --rm agentwarden agentwarden keygen --out /keys/signing-key.pem
 #   docker compose up --build
 services:
   agentwarden:
@@ -11,7 +10,7 @@ services:
       - "127.0.0.1:8000:8000"   # loopback only; put a TLS-terminating proxy in front for real use
     environment:
       AGENTWARDEN_ADMIN_KEY: ${AGENTWARDEN_ADMIN_KEY:?set AGENTWARDEN_ADMIN_KEY}
-      AGENTWARDEN_SIGNING_KEY_PATH: /keys/signing-key.pem
+      AGENTWARDEN_SIGNING_KEY_DIR: /keys   # key ring, created on first start; rotate with `agentwarden keys rotate`
     volumes:
       - agentwarden-data:/data
       - agentwarden-keys:/keys

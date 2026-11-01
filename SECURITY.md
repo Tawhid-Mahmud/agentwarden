@@ -34,7 +34,8 @@ deployment without rate limiting (a known gap).
 
 ## Deployment hardening checklist
 
-- [ ] Generate a persistent key: `agentwarden keygen`, then mount it read-only with mode `0600`
+- [ ] Use a persistent key ring (`AGENTWARDEN_SIGNING_KEY_DIR`) on storage only AgentWarden can read
+- [ ] Rotate signing keys on a schedule (`agentwarden keys rotate`) and prune retired keys (`agentwarden keys prune`)
 - [ ] Set a long random `AGENTWARDEN_ADMIN_KEY` (or leave it unset to disable admin routes)
 - [ ] Configure OIDC (`AGENTWARDEN_OIDC_ISSUER`, `AGENTWARDEN_OIDC_AUDIENCE`) and set `AGENTWARDEN_API_KEYS=false`
 - [ ] Replace the demo directory: no demo API keys, your own users, tools and trusted domains
