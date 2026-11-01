@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **MCP proxy mode** (`agentwarden mcp-proxy -- <server command>`): wraps any stdio MCP server and
+  authorizes every `tools/call`. Denied and pending calls never reach the server and come back as
+  MCP tool errors that explain why. Approvals work without client support (retry the same call once
+  approved). Tool results are recorded as untrusted context, and a YAML mapping translates MCP tool
+  names and can hide unmapped tools from `tools/list`. Works against a remote service
+  (`AGENTWARDEN_TOKEN`) or an in-process gateway (`--local`).
+
 ## [0.1.0] - 2026-11-01
 
 First MVP release.

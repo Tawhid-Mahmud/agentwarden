@@ -1,0 +1,11 @@
+# Map an MCP server's tool names onto AgentWarden directory tools.
+# Unmapped tools keep their own name, and AgentWarden denies names it doesn't know.
+tools:
+  gmail_send_message: send_email
+  gmail_search_messages: read_inbox
+  fetch: http_request
+  read_text_file: read_file
+  write_file: write_file
+
+# Hide every tool that isn't listed above from tools/list, so the model never sees it.
+hide_unmapped: true

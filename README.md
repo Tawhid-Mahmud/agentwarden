@@ -51,6 +51,7 @@ long-lived API key. Three things go wrong:
   also expose truncation.
 - **Least-privilege analyzer**: unused or wildcard scopes, dormant agents, deny-rate spikes and
   injection exposure, reported as Markdown or JSON.
+- **MCP proxy mode**: enforce every decision on any stdio MCP server, with no agent changes.
 - **Interfaces**: REST API (FastAPI), Python SDK with a `@guard` decorator, CLI, Docker.
 
 ## How it works
@@ -177,6 +178,39 @@ except AccessDenied as denied:
 ```
 
 See [`examples/guarded_agent.py`](examples/guarded_agent.py) for a runnable version.
+
+### 4. Put any MCP server behind AgentWarden
+
+`agentwarden mcp-proxy` wraps a stdio [MCP](https://modelcontextprotocol.io) server. The agent's
+MCP client launches the proxy instead of the server, and every `tools/call` is authorized before
+it reaches the server. No changes to the agent or the server are needed:
+
+- **Allowed** calls are forwarded unchanged.
+- **Denied** calls never reach the server. The proxy answers with an MCP tool error
+  (`isError: true`) that tells the model why and not to retry.
+- **Approvals** need no client support. The proxy remembers the pending approval for that exact
+  call. Once a human approves it, the agent retries the same call and it goes through, once.
+- **Tool outputs** are recorded as untrusted context automatically, so taint tracking and injection
+  detection work without any SDK code.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "agentwarden",
+      "args": ["mcp-proxy", "--url", "http://127.0.0.1:8000", "--map", "mcp-mapping.yaml",
+               "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
+      "env": { "AGENTWARDEN_TOKEN": "<agent token from POST /v1/tokens>" }
+    }
+  }
+}
+```
+
+[`examples/mcp-mapping.yaml`](examples/mcp-mapping.yaml) maps the server's tool names to
+AgentWarden tools and can hide unmapped tools from `tools/list`. Clients can pass the user's request
+for taint tracking in `params._meta["agentwarden/userPrompt"]`, or set it once with `--user-prompt`.
+For a self-contained try-out, `--local --agent inbox-assistant --scopes email:read email:send` runs
+an in-process gateway with the demo directory.
 
 ## Policy, briefly
 

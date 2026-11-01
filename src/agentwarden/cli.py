@@ -169,6 +169,63 @@ def cmd_eval(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_mcp_proxy(args: argparse.Namespace) -> int:
+    import asyncio
+    import logging
+    import os
+
+    from agentwarden.mcp import McpProxy, ToolMapping, run_stdio_proxy
+    from agentwarden.sdk import LocalWarden, WardenClient
+    from agentwarden.sdk.client import _WardenBase
+
+    # stdout carries the MCP protocol: every diagnostic goes to stderr.
+    logging.basicConfig(stream=sys.stderr, level=logging.WARNING, format="agentwarden: %(message)s")
+    command = list(args.command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("error: give the upstream MCP server command after '--'", file=sys.stderr)
+        return 2
+    mapping = ToolMapping.load(args.map) if args.map else ToolMapping()
+
+    warden: _WardenBase
+    gateway = None
+    if args.local:
+        from agentwarden.gateway import Gateway
+        from agentwarden.models import TokenRequest
+
+        if not args.agent or not args.scopes:
+            print("error: --local needs --agent and --scopes", file=sys.stderr)
+            return 2
+        gateway = Gateway.build(_settings(args))
+        user = gateway.directory.get_user(args.user)
+        if user is None:
+            gateway.close()
+            print(f"error: unknown user {args.user!r}", file=sys.stderr)
+            return 2
+        try:
+            issued = gateway.issue_token(
+                user, TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task)
+            )
+        except AgentWardenError:
+            gateway.close()
+            raise
+        warden = LocalWarden(gateway, issued.access_token)
+    else:
+        token = os.environ.get("AGENTWARDEN_TOKEN")
+        if not token:
+            print("error: set AGENTWARDEN_TOKEN (the agent token) or use --local", file=sys.stderr)
+            return 2
+        warden = WardenClient(args.url, token)
+    if args.user_prompt:
+        warden.set_user_prompt(args.user_prompt)
+    try:
+        return asyncio.run(run_stdio_proxy(McpProxy(warden, mapping), command))
+    finally:
+        if gateway is not None:
+            gateway.close()
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     from agentwarden.demo import run_demo
 
@@ -238,6 +295,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_eval)
+
+    p = sub.add_parser(
+        "mcp-proxy",
+        help="enforce AgentWarden on a stdio MCP server",
+        description="Run an MCP server behind AgentWarden: mcp-proxy [options] -- CMD...",
+    )
+    p.add_argument("--url", default="http://127.0.0.1:8000", help="AgentWarden service URL")
+    p.add_argument("--map", help="YAML mapping of MCP tool names to AgentWarden tools")
+    p.add_argument("--user-prompt", help="the user's request, for taint tracking")
+    p.add_argument("--local", action="store_true", help="in-process gateway (demos and tests)")
+    p.add_argument("--user", default="alice", help="--local: user who delegates to the agent")
+    p.add_argument("--agent", help="--local: agent id")
+    p.add_argument("--scopes", nargs="+", help="--local: scopes to request")
+    p.add_argument("--task", help="--local: task recorded in the token")
+    p.add_argument("--db", help="--local: SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="-- upstream server command")
+    p.set_defaults(func=cmd_mcp_proxy)
 
     p = sub.add_parser("demo", help="run the scripted end-to-end attack demo")
     p.add_argument("--no-color", action="store_true")

@@ -112,9 +112,10 @@ identity, delegated scopes, policy, provenance and human approval.
 - **Taint tracking is substring-based.** A destination the model rewrites (encodes, splits,
   paraphrases) may not match its untrusted source. Research-grade information-flow control is
   future work.
-- **AgentWarden only sees what the agent reports.** An agent that skips `authorize()`, or calls
-  tools directly, bypasses it. In production, tools should *require* AgentWarden (MCP proxy mode
-  and tool-side token validation are on the roadmap).
+- **AgentWarden only sees calls routed through it.** With the SDK, an agent that skips
+  `authorize()` bypasses it. **MCP proxy mode** closes this for MCP tools: the server is only
+  reachable through the proxy, which authorizes every `tools/call` and records every result.
+  Tools reached outside MCP still need tool-side token validation (roadmap).
 - **Single signing key, SQLite, demo user auth, no rate limiting.** See the roadmap.
 - **The optional LLM judge sends untrusted content to a third party** (the Anthropic API) when enabled.
 
