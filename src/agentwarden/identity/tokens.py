@@ -253,7 +253,7 @@ class TokenService:
             "act": _build_act(chain),
             "scope": " ".join(scopes),
             "roles": roles,
-            "iat": round(now, 3),
+            "iat": now,
         }
         if task:
             claims["task"] = task

