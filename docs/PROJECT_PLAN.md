@@ -163,7 +163,7 @@ gantt
 | v0.2 ✅ | **Key rotation**: key ring, `kid` selection, multi-key JWKS, grace periods | Limits blast radius of key compromise. **Built:** `agentwarden keys rotate/list/prune` and admin API |
 | v0.2 ✅ | **Postgres backend** | Multi-instance deployments. **Built:** `AGENTWARDEN_DATABASE_URL`, shared state across instances, CI on Postgres 16 |
 | v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |
-| v0.3 | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key |
+| v0.3 ✅ | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key. **Built:** RFC 9449 binding on issue, exchange and delegation; `agentwarden dpop keygen`; SDK and MCP proxy support |
 | v0.3 | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry |
 | v0.3 ✅ | **Approver console** | Better HITL ergonomics; reduces approval fatigue. **Built:** `/console` with full review evidence |
 | v1.0 | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers |
@@ -198,7 +198,7 @@ gantt
 |---|---|---|
 | Detector evasion (novel injection phrasing) | Injected call scores low | Deterministic controls stay primary (scope ceiling, recipient/domain policy, approvals); taint-flow is phrasing-independent; optional LLM judge |
 | False positives annoy users | Users bypass the tool | Default policy uses `require_approval` for medium risk and reserves `deny` for high-confidence cases; evidence explains each decision |
-| Signing key compromise | Forged tokens | Short TTLs, `kid`, key files outside the repo, zero-downtime rotation and pruning (built), DPoP (v0.3) |
+| Signing key compromise | Forged tokens | Short TTLs, `kid`, key files outside the repo, zero-downtime rotation and pruning (built); DPoP (built) limits theft of individual tokens |
 | Approval fatigue | Rubber-stamping | Risk evidence in queue, only high-impact actions gated, analyzer reports approval volume |
 | SQLite limits | Single-node only | Resolved: PostgreSQL backend for several instances (v0.2) |
 | LLM judge leaks sensitive context to a third party | Data exposure | Off by default, explicit opt-in, documented data flow, results cached by content hash |

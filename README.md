@@ -32,6 +32,9 @@ long-lived API key. Three things go wrong:
 
 - **Agent identity**: registry with owners, trust tiers, scope ceilings and a kill switch.
   Ed25519-signed JWTs (`EdDSA` only, which defeats `alg=none` and key confusion), JWKS endpoint.
+- **Sender-constrained tokens (DPoP, RFC 9449)**: bind an agent's token to a key it holds, so a
+  leaked token is useless without that key. Proofs are single-use, per request, and checked across
+  instances.
 - **Delegation for multi-agent systems**: sub-agents get *attenuated* tokens. Scopes can only
   narrow, lifetimes can't outlive the parent, depth is limited, cycles are rejected, and revoking a
   parent revokes every child.
@@ -316,6 +319,39 @@ AgentWarden tools and can hide unmapped tools from `tools/list`. Clients can pas
 for taint tracking in `params._meta["agentwarden/userPrompt"]`, or set it once with `--user-prompt`.
 For a self-contained try-out, `--local --agent inbox-assistant --scopes email:read email:send` runs
 an in-process gateway with the demo directory.
+
+### 8. Bind agent tokens to a key (DPoP)
+
+A plain agent token is a bearer credential: whoever copies it from a log, a prompt or a crash dump
+can use it until it expires. With [DPoP](https://www.rfc-editor.org/rfc/rfc9449) the token carries
+the thumbprint of the agent's public key (`cnf.jkt`), and every request must include a fresh proof
+signed with the private key, covering that request's method and URL and a hash of the token.
+
+```bash
+agentwarden dpop keygen --out agent-dpop.pem      # prints the key's jkt
+```
+
+```python
+import httpx
+from agentwarden.sdk import DpopKey, WardenClient
+
+key = DpopKey.load("agent-dpop.pem")
+url = "http://127.0.0.1:8000"
+issued = httpx.post(
+    f"{url}/v1/tokens",
+    headers={"X-API-Key": "alice-demo-key", **key.headers("POST", f"{url}/v1/tokens")},
+    json={"agent_id": "inbox-assistant", "scopes": ["email:read"]},
+).json()                                            # token_type == "DPoP"
+warden = WardenClient(url, issued["access_token"], dpop_key=key)  # signs a proof per call
+```
+
+The token exchange endpoint binds the same way (send a `DPoP` header), sub-agent tokens are bound
+with `dpop_jkt` in the delegation request (required when the parent token is bound), and the MCP
+proxy takes `--dpop-key`. AgentWarden rejects a bound token sent as `Bearer`, proofs signed by
+another key, proofs for another method, URL or token, stale proofs, and any proof used twice.
+Set `AGENTWARDEN_DPOP_REQUIRED=true` to refuse unbound tokens entirely, and set
+`AGENTWARDEN_PUBLIC_URL` to the URL clients use when AgentWarden runs behind a proxy, since proofs
+are checked against it.
 
 ## Policy, briefly
 

@@ -101,6 +101,13 @@ flowchart TB
 - **Revocation**: by `jti`, by ancestor (`anc`, so revoking a parent kills all children), and by
   subject (`user:x` / `agent:y` tokens issued at or before a cutoff). Disabling an agent also
   subject-revokes it, so re-enabling never resurrects leaked tokens.
+- **DPoP binding** (RFC 9449): a token issued with a `DPoP` proof carries `cnf: {"jkt": ...}`, the
+  RFC 7638 thumbprint of the agent's public key, and `token_type` `DPoP`. Each use must send
+  `Authorization: DPoP <token>` plus a fresh proof (`typ` `dpop+jwt`, ES256 or EdDSA, public `jwk`
+  only) whose `htm`/`htu` match the request, whose `iat` is within `AGENTWARDEN_DPOP_MAX_AGE`, and
+  whose `ath` is the token's SHA-256. Proof IDs are stored in `used_dpop_proofs`, so a replay fails
+  on any instance. A bound token presented as `Bearer` is rejected (no downgrade), and children of
+  a bound token must be bound too.
 
 ```mermaid
 flowchart LR

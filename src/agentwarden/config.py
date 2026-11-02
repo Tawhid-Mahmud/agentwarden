@@ -73,6 +73,13 @@ class Settings:
     trust_proxy_headers: bool = False
     #: Lifetime of authorization receipts handed to tools.
     receipt_ttl: int = 60
+    #: Require every agent token to be DPoP-bound (RFC 9449). Off: binding is per token.
+    dpop_required: bool = False
+    #: How long a DPoP proof is accepted after its ``iat``.
+    dpop_max_age: int = 60
+    #: Public base URL clients use (e.g. https://warden.example.com). DPoP proofs name the URL
+    #: they were made for; behind a proxy, set this so AgentWarden checks the external URL.
+    public_url: str | None = None
 
     def __post_init__(self) -> None:
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
@@ -101,6 +108,10 @@ class Settings:
         ):
             if getattr(self, name) < 0:
                 raise ConfigurationError(f"{name} can't be negative (0 disables it)")
+        if not 10 <= self.dpop_max_age <= 600:
+            raise ConfigurationError("dpop_max_age must be between 10 and 600 seconds")
+        if self.public_url and not self.public_url.startswith(("https://", "http://")):
+            raise ConfigurationError("public_url must be an http(s) URL")
         if not 5 <= self.receipt_ttl <= 600:
             raise ConfigurationError("receipt_ttl must be between 5 and 600 seconds")
         if not self.api_keys_enabled and not self.oidc_issuer:
@@ -170,4 +181,7 @@ class Settings:
             rate_limit_per_agent=get_int("RATE_LIMIT_PER_AGENT", base.rate_limit_per_agent),
             trust_proxy_headers=(get("TRUST_PROXY_HEADERS") or "").lower() in _TRUE,
             receipt_ttl=get_int("RECEIPT_TTL", base.receipt_ttl),
+            dpop_required=(get("DPOP_REQUIRED") or "").lower() in _TRUE,
+            dpop_max_age=get_int("DPOP_MAX_AGE", base.dpop_max_age),
+            public_url=(get("PUBLIC_URL") or "").rstrip("/") or None,
         )

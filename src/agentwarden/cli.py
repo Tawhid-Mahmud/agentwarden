@@ -215,7 +215,7 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
     import os
 
     from agentwarden.mcp import McpProxy, ToolMapping, run_stdio_proxy
-    from agentwarden.sdk import LocalWarden, WardenClient
+    from agentwarden.sdk import DpopKey, LocalWarden, WardenClient
     from agentwarden.sdk.client import _WardenBase
 
     # stdout carries the MCP protocol: every diagnostic goes to stderr.
@@ -244,19 +244,24 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
             print(f"error: unknown user {args.user!r}", file=sys.stderr)
             return 2
         try:
+            # The local proxy binds its own token to a throwaway DPoP key (RFC 9449).
+            dpop_key = DpopKey()
             issued = gateway.issue_token(
-                user, TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task)
+                user,
+                TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task),
+                jkt=dpop_key.thumbprint,
             )
         except AgentWardenError:
             gateway.close()
             raise
-        warden = LocalWarden(gateway, issued.access_token)
+        warden = LocalWarden(gateway, issued.access_token, dpop_key=dpop_key)
     else:
         token = os.environ.get("AGENTWARDEN_TOKEN")
         if not token:
             print("error: set AGENTWARDEN_TOKEN (the agent token) or use --local", file=sys.stderr)
             return 2
-        warden = WardenClient(args.url, token)
+        key = DpopKey.load(args.dpop_key) if args.dpop_key else None
+        warden = WardenClient(args.url, token, dpop_key=key)
     if args.user_prompt:
         warden.set_user_prompt(args.user_prompt)
     try:
@@ -264,6 +269,23 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
     finally:
         if gateway is not None:
             gateway.close()
+
+
+def cmd_dpop(args: argparse.Namespace) -> int:
+    from agentwarden.sdk import DpopKey
+
+    if args.dpop_command == "keygen":
+        key = DpopKey()
+        try:
+            key.save(args.out)
+        except FileExistsError:
+            print(f"error: {args.out} already exists; refusing to overwrite a key", file=sys.stderr)
+            return 1
+        print(f"wrote DPoP key (ES256) to {args.out} (mode 0600)")
+        print(f"jkt: {key.thumbprint}")
+        return 0
+    print(DpopKey.load(args.key).thumbprint)
+    return 0
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -361,8 +383,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scopes", nargs="+", help="--local: scopes to request")
     p.add_argument("--task", help="--local: task recorded in the token")
     p.add_argument("--db", help="--local: SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.add_argument("--dpop-key", help="PEM key the agent token is DPoP-bound to (remote mode)")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- upstream server command")
     p.set_defaults(func=cmd_mcp_proxy)
+
+    dpop = sub.add_parser("dpop", help="agent DPoP keys (RFC 9449)").add_subparsers(
+        dest="dpop_command", required=True
+    )
+    p = dpop.add_parser("keygen", help="create an agent DPoP key (ES256)")
+    p.add_argument("--out", default="agent-dpop.pem")
+    p.set_defaults(func=cmd_dpop)
+    p = dpop.add_parser("thumbprint", help="print a key's RFC 7638 thumbprint (jkt)")
+    p.add_argument("key")
+    p.set_defaults(func=cmd_dpop)
 
     p = sub.add_parser("demo", help="run the scripted end-to-end attack demo")
     p.add_argument("--no-color", action="store_true")

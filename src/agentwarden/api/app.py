@@ -15,6 +15,7 @@ import json
 import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from importlib import resources
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs
@@ -37,6 +38,7 @@ from agentwarden.errors import (
     RateLimitedError,
 )
 from agentwarden.gateway import Gateway
+from agentwarden.identity.dpop import DpopError, DpopPresentation
 from agentwarden.models import (
     Agent,
     AuditEvent,
@@ -138,13 +140,40 @@ def get_gateway(request: Request) -> Gateway:
 GatewayDep = Annotated[Gateway, Depends(get_gateway)]
 
 
-def bearer_token(authorization: Annotated[str | None, Header()] = None) -> str:
+def request_url(request: Request, gateway: Gateway) -> str:
+    """The URL a DPoP proof must name: the public URL when configured, else what we received."""
+    if gateway.settings.public_url:
+        return gateway.settings.public_url + request.url.path
+    return str(request.url.replace(query="", fragment=""))
+
+
+def dpop_presentation(request: Request, gateway: Gateway, scheme: str) -> DpopPresentation | None:
+    proof = request.headers.get("dpop")
+    if not proof and scheme.lower() != "dpop":
+        return None
+    return DpopPresentation(
+        proof=proof, method=request.method, url=request_url(request, gateway), scheme=scheme
+    )
+
+
+@dataclass(frozen=True)
+class AgentCredential:
+    token: str
+    dpop: DpopPresentation | None
+
+
+def agent_credential(
+    request: Request,
+    gateway: GatewayDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AgentCredential:
+    """``Authorization: Bearer <token>``, or ``DPoP <token>`` plus a proof for bound tokens."""
     if not authorization:
         raise AuthenticationError("missing Authorization: Bearer <agent token>")
     scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
-        raise AuthenticationError("expected Authorization: Bearer <agent token>")
-    return token.strip()
+    if scheme.lower() not in ("bearer", "dpop") or not token.strip():
+        raise AuthenticationError("expected Authorization: Bearer|DPoP <agent token>")
+    return AgentCredential(token.strip(), dpop_presentation(request, gateway, scheme))
 
 
 def current_user(
@@ -179,7 +208,7 @@ def require_admin(
     return "admin"
 
 
-TokenDep = Annotated[str, Depends(bearer_token)]
+TokenDep = Annotated[AgentCredential, Depends(agent_credential)]
 UserDep = Annotated[User, Depends(current_user)]
 AdminDep = Annotated[str, Depends(require_admin)]
 
@@ -218,6 +247,11 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
     async def _handle(_: Request, exc: AgentWardenError) -> JSONResponse:
         status = _error_status(exc)
         headers = {"WWW-Authenticate": "Bearer"} if status == 401 else None
+        if isinstance(exc, DpopError):
+            challenge = (
+                f'DPoP algs="ES256 EdDSA", error="invalid_dpop_proof", error_description="{exc}"'
+            )
+            headers = {"WWW-Authenticate": challenge}
         if isinstance(exc, RateLimitedError):
             headers = {"Retry-After": str(math.ceil(exc.retry_after))}
         return JSONResponse(
@@ -287,11 +321,15 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
     # ---------------------------------------------------------------- tokens
     @app.post("/v1/tokens", tags=["tokens"])
     def issue(
-        body: TokenRequest, user: UserDep, gateway: GatewayDep, response: Response
+        body: TokenRequest, user: UserDep, gateway: GatewayDep, request: Request, response: Response
     ) -> IssuedToken:
-        """A user delegates scoped, short-lived authority to one of their agents."""
+        """A user delegates scoped, short-lived authority to one of their agents.
+
+        Send a ``DPoP`` proof header (made with the *agent's* key) to bind the token to that key.
+        """
         response.headers.update(_NO_STORE)
-        return gateway.issue_token(user, body)
+        jkt = gateway.dpop_thumbprint(dpop_presentation(request, gateway, "DPoP"))
+        return gateway.issue_token(user, body, jkt=jkt)
 
     @app.post("/v1/token/exchange", tags=["tokens"], response_model=None)
     async def token_exchange(request: Request, gateway: GatewayDep) -> JSONResponse:
@@ -339,7 +377,11 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
         except (ValueError, ValidationError) as exc:
             return oauth_error("invalid_request", str(exc).splitlines()[0])
         try:
-            issued = gateway.exchange_token(subject_token, token_request)
+            jkt = gateway.dpop_thumbprint(dpop_presentation(request, gateway, "DPoP"))
+        except DpopError as exc:
+            return oauth_error("invalid_dpop_proof", str(exc))
+        try:
+            issued = gateway.exchange_token(subject_token, token_request, jkt=jkt)
         except AuthenticationError as exc:
             return oauth_error("invalid_grant", str(exc))
         except NotFoundError as exc:
@@ -350,7 +392,7 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
             {
                 "access_token": issued.access_token,
                 "issued_token_type": ISSUED_TOKEN_TYPE,
-                "token_type": "Bearer",  # nosec B105 - OAuth token type, not a secret
+                "token_type": issued.token_type,
                 "expires_in": issued.expires_in,
                 "scope": " ".join(issued.scope),
                 "denied_scopes": issued.denied_scopes,
@@ -361,25 +403,25 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
 
     @app.post("/v1/tokens/delegate", tags=["tokens"])
     def delegate(
-        body: DelegationRequest, token: TokenDep, gateway: GatewayDep, response: Response
+        body: DelegationRequest, credential: TokenDep, gateway: GatewayDep, response: Response
     ) -> IssuedToken:
-        """An agent hands a narrower token to a sub-agent."""
+        """An agent hands a narrower token to a sub-agent (bound to ``dpop_jkt`` if given)."""
         response.headers.update(_NO_STORE)
-        return gateway.delegate_token(token, body)
+        return gateway.delegate_token(credential.token, body, dpop=credential.dpop)
 
     @app.post("/v1/tokens/revoke", tags=["tokens"], status_code=204)
-    def revoke_own(token: TokenDep, gateway: GatewayDep) -> Response:
+    def revoke_own(credential: TokenDep, gateway: GatewayDep) -> Response:
         """Revoke the presented token (and everything delegated from it)."""
-        gateway.revoke_token(token)
+        gateway.revoke_token(credential.token, dpop=credential.dpop)
         return Response(status_code=204)
 
     # --------------------------------------------------------- authorization
     @app.post("/v1/authorize", tags=["authorization"])
     def authorize(
-        body: AuthorizeRequest, token: TokenDep, gateway: GatewayDep
+        body: AuthorizeRequest, credential: TokenDep, gateway: GatewayDep
     ) -> AuthorizationResult:
         """Ask whether a tool call is allowed. Always 200 for a decision; 401 for bad tokens."""
-        return gateway.authorize(token, body)
+        return gateway.authorize(credential.token, body, dpop=credential.dpop)
 
     # ------------------------------------------------------------- approvals
     @app.get("/v1/me", tags=["approvals"])

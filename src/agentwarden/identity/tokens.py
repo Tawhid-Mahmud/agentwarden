@@ -60,6 +60,8 @@ class TokenClaims(BaseModel):
     task: str | None = None
     depth: int = 0
     ancestors: tuple[str, ...] = ()
+    #: RFC 7638 thumbprint of the DPoP key this token is bound to (``cnf.jkt``), if any.
+    jkt: str | None = None
     issued_at: float
     expires_at: float
 
@@ -123,8 +125,9 @@ class TokenService:
         scopes: Sequence[str],
         task: str | None = None,
         ttl: int | None = None,
+        jkt: str | None = None,
     ) -> IssuedToken:
-        """Mint a token for ``agent`` acting on behalf of ``user``."""
+        """Mint a token for ``agent`` acting on behalf of ``user``, bound to ``jkt`` if given."""
         if not agent.enabled:
             raise PermissionDeniedError(f"agent {agent.id!r} is disabled")
         requested = dedupe(validate_scope(s, allow_wildcards=False) for s in scopes)
@@ -139,6 +142,8 @@ class TokenService:
         jti = uuid.uuid4().hex
         claims = self._base_claims(user.id, [agent.id], granted, list(user.roles), task, now)
         claims.update({"exp": expires_at, "jti": jti, "dep": 0, "anc": []})
+        if jkt:
+            claims["cnf"] = {"jkt": jkt}
         return self._encode(claims, granted, denied, [agent.id], expires_at, now)
 
     def delegate(
@@ -148,8 +153,13 @@ class TokenService:
         sub_agent: Agent,
         scopes: Sequence[str],
         ttl: int | None = None,
+        jkt: str | None = None,
     ) -> IssuedToken:
         """Derive a narrower token for ``sub_agent`` from a verified ``parent`` token."""
+        if parent.jkt and not jkt:
+            raise DelegationError(
+                "the parent token is DPoP-bound, so the child must be bound too (give dpop_jkt)"
+            )
         if parent.depth + 1 > self._settings.max_delegation_depth:
             raise DelegationError(
                 f"delegation depth limit ({self._settings.max_delegation_depth}) reached"
@@ -182,6 +192,8 @@ class TokenService:
                 "anc": [parent.jti, *parent.ancestors],
             }
         )
+        if jkt:
+            claims["cnf"] = {"jkt": jkt}
         return self._encode(claims, granted, denied, chain, expires_at, now)
 
     # -------------------------------------------------------------- verification
@@ -284,6 +296,7 @@ class TokenService:
             denied_scopes=denied,
             jti=claims["jti"],
             actor_chain=chain,
+            token_type="DPoP" if "cnf" in claims else "Bearer",
         )
 
     def _parse(self, payload: dict[str, Any]) -> TokenClaims:
@@ -300,6 +313,10 @@ class TokenService:
         scope = payload.get("scope")
         if not isinstance(scope, str) or not scope.strip():
             raise AuthenticationError("token has no scopes")
+        cnf = payload.get("cnf")
+        jkt = cnf.get("jkt") if isinstance(cnf, dict) else None
+        if cnf is not None and not isinstance(jkt, str):
+            raise AuthenticationError("malformed cnf claim")
         iat, exp = payload.get("iat"), payload.get("exp")
         if not isinstance(iat, int | float) or not isinstance(exp, int | float):
             raise AuthenticationError("iat/exp must be numeric")
@@ -314,4 +331,5 @@ class TokenService:
             ancestors=tuple(str(a) for a in ancestors),
             issued_at=float(iat),
             expires_at=float(exp),
+            jkt=jkt,
         )

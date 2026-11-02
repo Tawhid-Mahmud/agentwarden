@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **DPoP sender-constrained tokens** (RFC 9449): send a `DPoP` proof when requesting a token
+  (`POST /v1/tokens` or `/v1/token/exchange`) and it is bound to the agent's key (`cnf.jkt`,
+  `token_type: DPoP`). Bound tokens must be presented as `Authorization: DPoP` with a fresh proof
+  for each request; `Bearer` downgrades, foreign keys, mismatched method/URL/token and replays (tracked
+  in the database across instances) are rejected with `WWW-Authenticate: DPoP`. Delegated tokens
+  are bound with `dpop_jkt`, which is required when the parent is bound. New settings:
+  `AGENTWARDEN_DPOP_REQUIRED`, `AGENTWARDEN_DPOP_MAX_AGE`, `AGENTWARDEN_PUBLIC_URL`.
+- `agentwarden dpop keygen` / `dpop thumbprint`, `agentwarden.sdk.DpopKey`, `dpop_key=` on
+  `WardenClient` and `LocalWarden`, and `--dpop-key` on `mcp-proxy` (local mode binds automatically).
+
 ## [0.2.0] - 2026-11-01
 
 ### Added

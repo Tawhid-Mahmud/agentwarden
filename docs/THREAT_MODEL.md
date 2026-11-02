@@ -62,7 +62,7 @@ identity, delegated scopes, policy, provenance and human approval.
 
 | Boundary / threat | Mitigation in v0.1 | Residual risk / roadmap |
 |---|---|---|
-| **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Bearer tokens can be replayed until expiry → **DPoP sender-constrained tokens (v0.3)**; short TTLs (15 min default) limit the window |
+| **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Unbound tokens can be replayed until expiry: use **DPoP-bound tokens** (built; `AGENTWARDEN_DPOP_REQUIRED=true` enforces them) so a stolen token is useless without the agent's key; short TTLs (15 min default) limit the window either way |
 | **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | Each ID token can be exchanged once (tracked in the database, so across instances); replays are refused and audited |
 | **T**ampering: changing token claims | Signature covers all claims | n/a |
 | **T**ampering: changing approved arguments (A2) | Approval bound to `sha256(user, actor chain, tool, args)`; mismatch → deny + `approval.misuse` event | n/a |
@@ -125,11 +125,14 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Security testing
 
-Adversarial cases covered by the test suite (346 tests):
+Adversarial cases covered by the test suite (367 tests):
 
 - **Tokens**: `alg=none`, HS256 key confusion using the public key, foreign signing keys, unknown
   `kid`, payload tampering, expiry, future `iat`, wrong audience, revocation (token, ancestor,
   subject), structurally inconsistent claims.
+- **DPoP**: stolen tokens with an attacker's key, `Bearer` downgrade, proof replay (also across
+  instances sharing a database), wrong method, URL or token hash, stale and future proofs, HMAC and
+  unsigned proofs, private key material in the header, unbound tokens under the DPoP scheme.
 - **Delegation**: escalation, cycles, depth limits, lifetime clamping, ceiling attenuation.
 - **Policy**: missing fields, type confusion (bool vs. number), case variations, list semantics,
   default deny, approvals that can't unlock forbidden actions, path traversal (`..`, `%2e%2e`,

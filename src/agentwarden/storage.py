@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS used_id_tokens (
     expires_at {real} NOT NULL
 );
 
+-- DPoP proofs already presented (replay protection), kept for their acceptance window.
+CREATE TABLE IF NOT EXISTS used_dpop_proofs (
+    proof_hash TEXT PRIMARY KEY,
+    expires_at {real} NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     seq        {bigint} PRIMARY KEY,
     ts         TEXT NOT NULL,
@@ -100,6 +106,7 @@ TABLES = (
     "subject_revocations",
     "approvals",
     "used_id_tokens",
+    "used_dpop_proofs",
     "audit_log",
 )
 
