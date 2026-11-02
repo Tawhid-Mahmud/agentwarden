@@ -445,25 +445,33 @@ CI fails if any of these regress.
 
 ```bash
 make install   # editable install with dev + LLM extras
-make check     # ruff, mypy --strict, bandit, hidden-character scan, tests (95% coverage), policy suite, eval gate
+make check     # ruff, mypy --strict, bandit, hidden-character scan, tests (94% coverage), policy suite, eval gate
 ```
 
-The suite has 346 tests. Storage tests also run against PostgreSQL when
-`AGENTWARDEN_TEST_DATABASE_URL` points at a throwaway database, which CI does on Postgres 16.
+The suite has 459 tests. Storage tests also run against PostgreSQL when
+`AGENTWARDEN_TEST_DATABASE_URL` points at a throwaway database (CI does, on Postgres 16), and the
+policy-backend tests run against a real OPA server when `AGENTWARDEN_TEST_OPA_URL` is set (CI does).
+`agentwarden bench` runs the public benchmark ([docs/BENCHMARK.md](docs/BENCHMARK.md)).
 
 ```text
 src/agentwarden/
-├── identity/        keys (Ed25519/JWKS), scopes, delegated tokens, registry & revocation
-├── policy/          schema, evaluator, policy-as-code test runner
-├── risk/            text de-obfuscation, detectors, risk engine, optional Claude judge
+├── identity/        keys & key ring, scopes, tokens, DPoP, OIDC, registry & revocation
+├── policy/          YAML engine, Cedar and OPA backends, policy-as-code test runner
+├── risk/            de-obfuscation, detectors, action provenance, risk engine, Claude judge
 ├── approvals.py     bound, single-use, SoD approvals
+├── receipts.py      signed authorization receipts for tools
+├── ratelimit.py     per-IP and per-agent limits
 ├── audit.py         hash-chained log, signed checkpoints
 ├── analyzer.py      least-privilege findings
 ├── gateway.py       the enforcement pipeline
 ├── api/             FastAPI service
-├── sdk/             WardenClient, LocalWarden, @guard
+├── sdk/             WardenClient, LocalWarden, @guard, DPoP keys
+├── mcp/             MCP proxy
+├── siem/            OCSF mapping and chain-checked audit export
+├── benchmark/       InjecAgent and BIPIA benchmark
+├── telemetry.py     OpenTelemetry spans and metrics
 ├── cli.py · demo.py · evaluation.py
-└── data/            default policy, demo directory, injection corpus
+└── data/            default policy (YAML, Cedar, Rego), demo directory, corpora
 ```
 
 ## Status & limitations

@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| **Status** | v0.2.0 released (MCP proxy, OIDC sign-in, key rotation, Postgres, approver console, rate limiting, receipts) |
+| **Status** | v0.3.0 released (DPoP tokens, SIEM/OTel, public benchmark, action-provenance detector, Cedar/OPA backends); v0.2.0 added the MCP proxy, OIDC sign-in, key rotation, Postgres and the approver console |
 | **Owner** | Mohammad Tawhid Mahmud |
 | **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite or PostgreSQL |
 | **License** | MIT |
@@ -50,7 +50,7 @@ authorized* and *verifiably audited*.
 
 ### Non-goals (v0.x)
 
-- Being a general-purpose IdP. AgentWarden integrates with one (OIDC token exchange is planned for v0.2).
+- Being a general-purpose IdP. AgentWarden integrates with one (OIDC token exchange, built in v0.2).
 - Guaranteeing prompt-injection detection. Heuristics and LLM judges can be evaded. The design
   relies on **deterministic IAM controls** (scopes, policy, approvals) as the primary defense and
   uses risk scoring as an additional signal.
@@ -117,7 +117,7 @@ authorized* and *verifiably audited*.
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for component diagrams and sequence flows, and
-[THREAT_MODEL.md](THREAT_MODEL.md) for the STRIDE and OWASP mapping. (*OIDC is planned for v0.2.)
+[THREAT_MODEL.md](THREAT_MODEL.md) for the STRIDE and OWASP mapping. (*OIDC sign-in was added in v0.2.)
 
 ## 7. Delivery phases (v0.1 MVP)
 

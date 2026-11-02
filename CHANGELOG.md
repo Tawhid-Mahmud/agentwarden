@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+Agent tokens can be bound to the agent's key, decisions reach your SIEM and tracing, prompt-injection
+defenses are measured on public datasets, a new detector catches politely worded injections, and
+policy can be written in Cedar or Rego.
+
 ### Added
 - **Prompt-injection benchmark** (`agentwarden bench`, `docs/BENCHMARK.md`): 2,108 InjecAgent
   scenarios through the full gateway (attack success rate, rate without the critical-tier gate,
@@ -56,6 +62,14 @@ All notable changes to this project are documented here. The format follows
   risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and
   medium-risk write tools with a risk score just under the 0.5 approval threshold. Explicit-override
   attack success fell from 3.2% to 0%, with no utility loss.
+
+### Quality
+- 459 tests (94% coverage) on SQLite and PostgreSQL; the policy suite (26 cases) passes on the YAML,
+  Cedar and OPA backends, the last against a real OPA server in CI.
+- CI gates on the public benchmark: attack success ≤ 3%, benign-action false alarms ≤ 5%, utility
+  ≥ 99%, detector recall ≥ 55% and false positives ≤ 2% on real documents.
+- Secret-scanner false positives removed: the CI Postgres service uses trust auth, and test
+  credentials are built at runtime.
 
 ## [0.2.0] - 2026-11-01
 

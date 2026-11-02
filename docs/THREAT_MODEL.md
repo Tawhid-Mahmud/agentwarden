@@ -130,7 +130,7 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Security testing
 
-Adversarial cases covered by the test suite (407 tests):
+Adversarial cases covered by the test suite (459 tests):
 
 - **Tokens**: `alg=none`, HS256 key confusion using the public key, foreign signing keys, unknown
   `kid`, payload tampering, expiry, future `iat`, wrong audience, revocation (token, ancestor,
