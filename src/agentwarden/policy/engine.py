@@ -190,6 +190,10 @@ def _reason(rule: Rule, verb: str) -> str:
 
 
 class PolicyEngine:
+    """The built-in YAML policy engine (the ``yaml`` backend)."""
+
+    name = "yaml"
+
     def __init__(self, policy: Policy) -> None:
         self.policy = policy
 

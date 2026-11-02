@@ -102,6 +102,39 @@ jobs:
       - name: End-to-end attack demo
         run: agentwarden demo --no-color
 
+  opa:
+    name: Policy backends against a real OPA server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+      - name: Check the Rego port
+        run: opa check --strict src/agentwarden/data/policy.rego
+      - name: Start OPA with the default policy
+        run: |
+          opa run --server --addr 127.0.0.1:8181 src/agentwarden/data/policy.rego > opa.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8181/health && break; sleep 1; done
+      - name: Install
+        run: pip install -e ".[dev]"
+      - name: Same policy test suite, three backends
+        run: |
+          agentwarden policy test tests/policy/default_policy_cases.yaml
+          agentwarden policy test --backend cedar tests/policy/default_policy_cases.yaml
+          agentwarden policy test --backend opa --opa-url http://127.0.0.1:8181 tests/policy/default_policy_cases.yaml
+      - name: Backend tests (real OPA)
+        env:
+          AGENTWARDEN_TEST_OPA_URL: http://127.0.0.1:8181
+        run: pytest -W error tests/test_policy_backends.py -o addopts="" -q
+      - name: OPA log
+        if: failure()
+        run: cat opa.log
+
   benchmark:
     name: Prompt-injection benchmark (BIPIA, InjecAgent)
     runs-on: ubuntu-latest

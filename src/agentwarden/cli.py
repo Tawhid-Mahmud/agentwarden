@@ -117,9 +117,12 @@ def cmd_hash_key(args: argparse.Namespace) -> int:
 
 
 def cmd_policy_validate(args: argparse.Namespace) -> int:
-    from agentwarden.policy import PolicyEngine
+    from agentwarden.policy import CedarPolicy, PolicyEngine
 
-    path = Path(args.file) if args.file else Settings.from_env().policy_path
+    path = Path(args.file) if args.file else Settings.from_env().effective_policy_path
+    if path.suffix == ".cedar":
+        print(f"OK {path}: {CedarPolicy.from_file(path).rule_count} Cedar policies")
+        return 0
     policy = PolicyEngine.from_file(path).policy
     counts = {
         e: sum(1 for r in policy.rules if r.effect.value == e)
@@ -137,7 +140,12 @@ def cmd_policy_test(args: argparse.Namespace) -> int:
 
     failed = total = 0
     for suite in args.suites:
-        results = run_suite(suite, policy_path=args.policy)
+        results = run_suite(
+            suite,
+            policy_path=args.policy,
+            backend=args.backend,
+            opa_url=args.opa_url or os.environ.get("AGENTWARDEN_OPA_URL"),
+        )
         print(f"{suite}")
         for result in results:
             total += 1
@@ -417,11 +425,18 @@ def build_parser() -> argparse.ArgumentParser:
         dest="policy_command", required=True
     )
     p = policy.add_parser("validate", help="validate a policy file")
-    p.add_argument("file", nargs="?", help="policy YAML (default: configured policy)")
+    p.add_argument("file", nargs="?", help="policy .yaml or .cedar (default: configured policy)")
     p.set_defaults(func=cmd_policy_validate)
     p = policy.add_parser("test", help="run policy test suites")
     p.add_argument("suites", nargs="+")
     p.add_argument("--policy", help="policy file (overrides each suite's 'policy' key)")
+    p.add_argument(
+        "--backend",
+        choices=["yaml", "cedar", "opa"],
+        default="yaml",
+        help="cedar: the .cedar file next to the suite's policy; opa: the server at --opa-url",
+    )
+    p.add_argument("--opa-url", help="OPA server for --backend opa (default AGENTWARDEN_OPA_URL)")
     p.set_defaults(func=cmd_policy_test)
 
     audit = sub.add_parser("audit", help="audit log tools").add_subparsers(

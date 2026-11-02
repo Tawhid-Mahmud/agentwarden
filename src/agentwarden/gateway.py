@@ -58,7 +58,7 @@ from agentwarden.models import (
     Tool,
     User,
 )
-from agentwarden.policy import PolicyEngine
+from agentwarden.policy import PolicyBackend, load_backend
 from agentwarden.ratelimit import RateLimiter
 from agentwarden.receipts import issue_receipt
 from agentwarden.risk import DetectionContext, Detector, RiskEngine, compute_facts, flatten_strings
@@ -94,7 +94,7 @@ class Gateway:
         revocations: RevocationList,
         keys: SigningKeys,
         tokens: TokenService,
-        policy: PolicyEngine,
+        policy: PolicyBackend,
         risk: RiskEngine,
         approvals: ApprovalQueue,
         audit: AuditLog,
@@ -159,7 +159,14 @@ class Gateway:
             revocations=revocations,
             keys=keys,
             tokens=TokenService(keys, settings, revocations, clock=clock),
-            policy=PolicyEngine.from_file(settings.policy_path),
+            policy=load_backend(
+                settings.policy_backend,
+                policy_path=settings.effective_policy_path,
+                opa_url=settings.opa_url,
+                opa_path=settings.opa_path,
+                opa_token=settings.opa_token,
+                opa_timeout=settings.opa_timeout,
+            ),
             risk=RiskEngine.default(activity=audit, clock=clock, extra=detectors),
             approvals=ApprovalQueue(db, ttl=settings.approval_ttl, clock=clock),
             audit=audit,
