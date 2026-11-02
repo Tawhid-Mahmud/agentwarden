@@ -124,6 +124,15 @@ rules:
     when:
       - { field: risk.signals, op: contains, value: tainted_external_destination }
 
+  - id: approve-after-injection
+    description: >-
+      The agent read content with instructions aimed at it (or put them in arguments). Whatever it
+      does next with side effects, a human confirms, however low the tool's own risk.
+    effect: require_approval
+    when:
+      - { field: risk.detectors, op: contains, value: injection }
+      - { field: tool.side_effect, op: in, value: [write, external] }
+
   - id: approve-elevated-risk
     description: Elevated risk score; ask a human before doing anything with side effects.
     effect: require_approval

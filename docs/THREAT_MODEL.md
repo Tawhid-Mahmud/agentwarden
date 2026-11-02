@@ -107,9 +107,12 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Out of scope / known limitations
 
-- **Detection is evadable.** The bundled corpus documents a known miss (plain-language tool
-  coercion) and false positives (text that discusses attacks). Deterministic controls are the
-  primary defense.
+- **Detection is evadable.** On public data ([BENCHMARK.md](BENCHMARK.md)) the phrase detector
+  catches explicit overrides but 0% of InjecAgent's plain-language injections and under 1% of
+  BIPIA's. With the agent holding every scope, 22.6% of plain-language direct-harm scenarios get
+  through (data theft: 0%, thanks to taint tracking). Deterministic controls are the primary
+  defense: keep scopes narrow and mark dangerous tools critical. A semantic detector (the
+  optional Claude judge or a classifier) is the path to better recall.
 - **Taint tracking is substring-based.** A destination the model rewrites (encodes, splits,
   paraphrases) may not match its untrusted source. Research-grade information-flow control is
   future work.

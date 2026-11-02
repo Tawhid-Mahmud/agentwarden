@@ -220,6 +220,39 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bench(args: argparse.Namespace) -> int:
+    from agentwarden.benchmark import run_benchmark
+    from agentwarden.errors import ConfigurationError
+
+    try:
+        report = run_benchmark(
+            tracks=args.track or ("detection", "agent"),
+            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+            threshold=args.threshold,
+            limit=args.limit,
+            offline=args.offline,
+        )
+    except ConfigurationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    markdown = report.to_markdown()
+    if args.markdown:
+        Path(args.markdown).write_text(markdown, encoding="utf-8")
+    if args.json:
+        Path(args.json).write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    if not args.quiet:
+        print(markdown, end="")
+    failures = report.check(
+        min_recall=args.min_recall,
+        max_fpr=args.max_fpr,
+        max_asr=args.max_asr,
+        min_utility=args.min_utility,
+    )
+    for failure in failures:
+        print(f"GATE FAILED: {failure}", file=sys.stderr)
+    return 1 if failures else 0
+
+
 def cmd_eval(args: argparse.Namespace) -> int:
     from agentwarden.evaluation import evaluate, load_corpus
     from agentwarden.risk import InjectionDetector
@@ -417,6 +450,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=["markdown", "json"], default="markdown")
     p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser(
+        "bench", help="benchmark against public prompt-injection datasets (BIPIA, InjecAgent)"
+    )
+    p.add_argument(
+        "--track",
+        action="append",
+        choices=["detection", "agent"],
+        help="repeatable (default: both)",
+    )
+    p.add_argument("--threshold", type=float, default=0.3, help="detector flag threshold")
+    p.add_argument("--limit", type=int, help="use only the first N cases of each dataset file")
+    p.add_argument("--cache-dir", help="dataset cache (default ~/.cache/agentwarden/benchmarks)")
+    p.add_argument("--offline", action="store_true", help="use cached datasets only")
+    p.add_argument("--markdown", help="also write the Markdown report here")
+    p.add_argument("--json", help="also write the JSON report here")
+    p.add_argument("--quiet", action="store_true", help="don't print the report")
+    p.add_argument("--min-recall", type=float, help="gate: overall detection recall")
+    p.add_argument("--max-fpr", type=float, help="gate: false-positive rate on benign documents")
+    p.add_argument("--max-asr", type=float, help="gate: agent-track attack success rate")
+    p.add_argument("--min-utility", type=float, help="gate: agent-track utility")
+    p.set_defaults(func=cmd_bench)
 
     p = sub.add_parser("eval", help="evaluate injection detection on a labeled corpus")
     p.add_argument("--corpus", default=str(DEFAULT_CORPUS_PATH))

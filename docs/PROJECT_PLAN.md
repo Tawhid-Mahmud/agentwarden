@@ -166,7 +166,7 @@ gantt
 | v0.3 ✅ | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key. **Built:** RFC 9449 binding on issue, exchange and delegation; `agentwarden dpop keygen`; SDK and MCP proxy support |
 | v0.3 ✅ | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry. **Built:** `agentwarden audit export` (file/HTTPS, chain-checked cursor), `GET /v1/audit/export`, OTel spans and metrics ([SIEM.md](SIEM.md)) |
 | v0.3 ✅ | **Approver console** | Better HITL ergonomics; reduces approval fatigue. **Built:** `/console` with full review evidence |
-| v1.0 | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers |
+| v1.0 ✅ | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers. **Built:** `agentwarden bench` on InjecAgent and BIPIA, CI gates ([BENCHMARK.md](BENCHMARK.md)) |
 | v1.0 | **SPIFFE workload identity** | Cryptographic agent identity without shared secrets |
 
 ## 9. Success metrics
@@ -177,10 +177,13 @@ gantt
 | Authorization latency (in-process, heuristics only) | p95 < 5 ms | ✅ **0.95 ms** clean call · **3.6 ms** with 2.5 KB of context | 500-call micro-benchmark incl. token verification and audit write |
 | Injection corpus recall / FPR | ≥ 90% / ≤ 10% | ✅ **95.2% / 8.7%** (precision 90.9%) | `agentwarden eval` on the bundled corpus, CI gate |
 | Static analysis | 0 high-severity findings | ✅ 0 findings | `bandit`, `ruff` security rules, Trojan Source scan |
-| Policy regressions | 0 failing policy cases | ✅ 23/23 | `agentwarden policy test` in CI |
+| Policy regressions | 0 failing policy cases | ✅ 25/25 | `agentwarden policy test` in CI |
+
+| Public benchmark (InjecAgent, full gateway) | attack success ≤ 15%, utility ≥ 99% | ✅ **11.3%** (0% data stealing) / **100%** | `agentwarden bench`, CI gate |
+| Public benchmark (BIPIA documents) | false positives ≤ 2% | ✅ **0.5%** (detector recall 42.6% overall) | `agentwarden bench`, CI gate |
 
 > The bundled corpus is small and hand-written. It works as a **regression suite**, not as a
-> benchmark. Comparing against public datasets is a v1.0 roadmap item.
+> benchmark. [BENCHMARK.md](BENCHMARK.md) has the public-dataset method, results and limitations.
 
 ## 10. Testing & evaluation strategy
 

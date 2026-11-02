@@ -57,6 +57,8 @@ long-lived API key. Three things go wrong:
   also expose truncation.
 - **SIEM export and OpenTelemetry**: stream the audit trail as OCSF 1.3 events to a file or HTTPS
   collector (the exporter stops if exported history was rewritten), and trace and count every decision.
+- **Public benchmark** (`agentwarden bench`): attack success and utility on InjecAgent through the
+  full gateway, plus detector recall and false positives on BIPIA, with CI regression gates.
 - **Least-privilege analyzer**: unused or wildcard scopes, dormant agents, deny-rate spikes and
   injection exposure, reported as Markdown or JSON.
 - **OIDC sign-in**: users authenticate with your identity provider and exchange the ID token for an
@@ -81,7 +83,7 @@ flowchart LR
 ```
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) ·
-[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/SIEM.md](docs/SIEM.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
+[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/SIEM.md](docs/SIEM.md) · [docs/BENCHMARK.md](docs/BENCHMARK.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
 
 ## Quickstart
 
@@ -395,7 +397,7 @@ for the full mapping, the pull API (`GET /v1/audit/export`) and detection ideas.
     - { field: facts.external_recipients, op: empty, value: false }
 ```
 
-The bundled [default policy](src/agentwarden/data/policy.yaml) has 16 rules and a 23-case
+The bundled [default policy](src/agentwarden/data/policy.yaml) has 17 rules and a 25-case
 [test suite](tests/policy/default_policy_cases.yaml). Full language: [POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md).
 
 ## Detection quality
@@ -409,9 +411,23 @@ obfuscated samples generated at load time:
 
 The corpus is small and hand-written, so treat it as a **regression gate** (enforced in CI) and not
 as a benchmark. It deliberately keeps one known miss (a plain-language tool-coercion instruction)
-and two hard negatives (text *about* prompt injection). Those are the reasons AgentWarden relies on
-deterministic controls (scopes, taint-aware policy, approvals) and treats detection as a signal.
-Public-benchmark evaluation is on the [roadmap](docs/PROJECT_PLAN.md#8-roadmap-post-mvp).
+and two hard negatives (text *about* prompt injection).
+
+`agentwarden bench` is the external check, on public datasets
+([InjecAgent](https://github.com/uiuc-kang-lab/InjecAgent) and [BIPIA](https://github.com/microsoft/BIPIA)),
+pinned and verified by hash. It runs 2,108 InjecAgent agent scenarios through the full gateway, where
+the agent holds every scope it needs, so scopes alone stop nothing:
+
+| Attack success rate | … without critical-tier approval | Data-stealing attacks | Utility | Detector recall / FPR |
+|---|---|---|---|---|
+| **11.3%** | 25.0% | **0.0%** | **100%** | 42.6% / 0.5% |
+
+Taint tracking stops every data-stealing attack, however it's phrased. The phrase-based detector
+catches explicit "ignore previous instructions" overrides but not injections written as ordinary
+requests, so plain-language direct-harm attacks on non-critical tools are the open problem.
+AgentWarden relies on deterministic controls (scopes, taint-aware policy, approvals) and treats
+detection as a signal. Method, per-category results and limitations:
+[docs/BENCHMARK.md](docs/BENCHMARK.md). CI fails if any of these regress.
 
 ## Development
 

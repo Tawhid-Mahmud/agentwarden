@@ -152,6 +152,22 @@ cases:
     expect: require_approval
     expect_rules: [approve-elevated-risk]
 
+  - name: injected instructions gate even low-risk side effects
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+      risk: { score: 0.48, level: medium, detectors: [injection], signals: [instruction_override] }
+    expect: require_approval
+    expect_rules: [approve-after-injection]
+
+  - name: injected instructions don't block reading
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: read_file, risk: medium, side_effect: read }
+      risk: { score: 0.48, level: medium, detectors: [injection], signals: [instruction_override] }
+    expect: allow
+
   - name: untrusted agents are read-only
     input:
       agent: { id: summarizer, trust_tier: untrusted }

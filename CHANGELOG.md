@@ -6,6 +6,13 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Prompt-injection benchmark** (`agentwarden bench`, `docs/BENCHMARK.md`): 2,108 InjecAgent
+  scenarios through the full gateway (attack success rate, rate without the critical-tier gate,
+  utility, per attack type) and the injection detector on BIPIA documents and attacks (recall per
+  category, false positives on real emails, tables and code). Datasets are fetched from pinned
+  commits, verified by SHA-256 and cached, never redistributed. A CI job runs it with regression
+  gates and publishes the report. Current results: 11.3% attack success (0% for data stealing),
+  100% utility, detector recall 42.6% at a 0.5% false-positive rate.
 - **DPoP sender-constrained tokens** (RFC 9449): send a `DPoP` proof when requesting a token
   (`POST /v1/tokens` or `/v1/token/exchange`) and it is bound to the agent's key (`cnf.jkt`,
   `token_type: DPoP`). Bound tokens must be presented as `Authorization: DPoP` with a fresh proof
@@ -26,6 +33,13 @@ All notable changes to this project are documented here. The format follows
   `agentwarden.decisions`, `agentwarden.authorize.duration` and `agentwarden.tokens` metrics. No user
   IDs, arguments or prompts in telemetry; audit entries record their `trace_id`. The Docker image
   includes the OTLP exporter.
+
+### Changed
+- **New default policy rule `approve-after-injection`**: once injection is detected in what the
+  agent read (or in its arguments), any call with side effects needs approval, whatever the tool's
+  risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and
+  medium-risk write tools with a risk score just under the 0.5 approval threshold. Explicit-override
+  attack success fell from 3.2% to 0%, with no utility loss.
 
 ## [0.2.0] - 2026-11-01
 
