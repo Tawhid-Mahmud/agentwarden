@@ -12,16 +12,21 @@ from agentwarden.benchmark.datasets import BIPIA, INJECAGENT, Source, load_json,
 from agentwarden.benchmark.suites import (
     AgentCase,
     AgentResult,
+    BenignOutcome,
+    BenignResult,
     CaseResult,
     DetectionResult,
+    benign_cases,
     bipia_samples,
     injecagent_cases,
     injecagent_text_samples,
     run_agent,
+    run_benign,
     run_detection,
 )
 
 TRACKS = ("detection", "agent")
+SPLITS = ("all", "dev", "test")
 
 
 def _pct(value: float | None) -> str:
@@ -34,7 +39,9 @@ class BenchmarkReport:
     sources: list[Source]
     detection: dict[str, DetectionResult] = field(default_factory=dict)
     agent: AgentResult | None = None
+    benign: BenignResult | None = None
     limit: int | None = None
+    split: str = "all"
 
     # ----------------------------------------------------------------- headline numbers
     def detection_recall(self, dataset_prefix: str = "") -> float | None:
@@ -55,6 +62,7 @@ class BenchmarkReport:
         max_fpr: float | None = None,
         max_asr: float | None = None,
         min_utility: float | None = None,
+        max_false_alarms: float | None = None,
     ) -> list[str]:
         """Human-readable failures for the given quality gates (empty: all passed)."""
         failures = []
@@ -70,6 +78,12 @@ class BenchmarkReport:
                 failures.append(f"utility {_pct(self.agent.utility())} < {_pct(min_utility)}")
         elif max_asr is not None or min_utility is not None:
             failures.append("agent-track gates given but the agent track did not run")
+        if max_false_alarms is not None:
+            rate = self.benign.false_alarm_rate() if self.benign else None
+            if rate is None or rate > max_false_alarms:
+                failures.append(
+                    f"benign-action false alarms {_pct(rate)} > {_pct(max_false_alarms)}"
+                )
         return failures
 
     # ---------------------------------------------------------------------------- JSON
@@ -78,6 +92,7 @@ class BenchmarkReport:
             "agentwarden_version": __version__,
             "threshold": self.threshold,
             "limit": self.limit,
+            "split": self.split,
             "datasets": [
                 {"name": s.name, "repo": s.homepage, "commit": s.commit, "license": s.license}
                 for s in self.sources
@@ -115,6 +130,17 @@ class BenchmarkReport:
                 "by_kind": _breakdown(agent, lambda r: r.case.kind),
                 "by_attack_type": _breakdown(agent, lambda r: r.case.attack_type),
             }
+        if self.benign is not None:
+            benign = self.benign
+            out["benign_actions"] = {
+                "cases": len(benign.outcomes),
+                "false_alarm_rate": benign.false_alarm_rate(),
+                "allowed_rate": benign.allowed_rate(),
+                "by_phrasing_and_document": {
+                    name: {"cases": len(group), "false_alarm_rate": benign.false_alarm_rate(group)}
+                    for name, group in _benign_groups(benign).items()
+                },
+            }
         return out
 
     # ------------------------------------------------------------------------ Markdown
@@ -123,6 +149,7 @@ class BenchmarkReport:
             "# AgentWarden prompt-injection benchmark",
             "",
             f"AgentWarden {__version__} · detection threshold {self.threshold}"
+            + (f" · {self.split} split" if self.split != "all" else "")
             + (f" · first {self.limit} cases per file" if self.limit else ""),
             "",
             "| Dataset | Commit | License |",
@@ -162,6 +189,24 @@ class BenchmarkReport:
                         f"| {title}: {name} | {len(group)} | {_pct(agent.asr(group))} |"
                         f" {_pct(agent.asr_without_tier_gate(group))} |"
                     )
+        if self.benign is not None:
+            benign = self.benign
+            lines += [
+                "",
+                "### Benign actions (false alarms)",
+                "",
+                f"{len(benign.outcomes)} calls the user explicitly asked for, made after reading"
+                " a document. A *false alarm* is a call the risk engine holds or denies"
+                " (critical-tier approval doesn't count)."
+                f" Overall: **{_pct(benign.false_alarm_rate())}**.",
+                "",
+                "| Phrasing / document | Calls | False alarms |",
+                "|---|---|---|",
+                *[
+                    f"| {name} | {len(group)} | {_pct(benign.false_alarm_rate(group))} |"
+                    for name, group in _benign_groups(benign).items()
+                ],
+            ]
         if self.detection:
             lines += [
                 "",
@@ -182,6 +227,11 @@ class BenchmarkReport:
                 for category, tally in sorted(r.by_category.items()):
                     lines.append(f"| {name}: {category} | {tally.total} | {_pct(tally.rate)} |")
         return "\n".join(lines) + "\n"
+
+
+def _benign_groups(benign: BenignResult) -> dict[str, list[BenignOutcome]]:
+    labels = {"bipia": "real email (BIPIA)", "work": "work email with requests"}
+    return benign.group(lambda o: f"{o.case.phrasing}, {labels[o.case.document_source]}")
 
 
 def _outcomes(cases: Sequence[CaseResult]) -> dict[str, int]:
@@ -207,14 +257,18 @@ def _breakdown(agent: AgentResult, key: Callable[[CaseResult], str]) -> dict[str
 
 
 def load_injecagent(
-    cache_dir: Path | None = None, *, offline: bool = False, limit: int | None = None
+    cache_dir: Path | None = None,
+    *,
+    offline: bool = False,
+    limit: int | None = None,
+    split: str = "all",
 ) -> list[AgentCase]:
     cases: list[AgentCase] = []
     for kind in ("dh", "ds"):
         for variant in ("base", "enhanced"):
             raw = load_json(f"injecagent/{kind}_{variant}", cache_dir, offline=offline)
             cases += injecagent_cases(raw[:limit], kind, variant)
-    return cases
+    return [c for c in cases if split == "all" or c.split == split]
 
 
 def run_benchmark(
@@ -224,26 +278,40 @@ def run_benchmark(
     threshold: float = 0.3,
     limit: int | None = None,
     offline: bool = False,
+    split: str = "all",
 ) -> BenchmarkReport:
+    """Run the benchmark. ``split="dev"`` uses BIPIA's training files and the dev half of
+    InjecAgent (for developing detectors); ``"test"`` the held-out halves; ``"all"`` (the
+    reported numbers) BIPIA's test files and all of InjecAgent."""
     unknown = set(tracks) - set(TRACKS)
     if unknown:
         raise ValueError(f"unknown track(s): {', '.join(sorted(unknown))}")
-    report = BenchmarkReport(threshold=threshold, sources=[INJECAGENT], limit=limit)
-    cases = load_injecagent(cache_dir, offline=offline, limit=limit)
+    if split not in SPLITS:
+        raise ValueError(f"unknown split {split!r}; use one of {', '.join(SPLITS)}")
+    report = BenchmarkReport(threshold=threshold, sources=[INJECAGENT], limit=limit, split=split)
+    cases = load_injecagent(cache_dir, offline=offline, limit=limit, split=split)
+    bipia = "bipia-train" if split == "dev" else "bipia"
     if "detection" in tracks:
         report.sources = [BIPIA, INJECAGENT]
         contexts = {
             task: [
                 str(row["context"])
-                for row in load_jsonl(f"bipia/{task}", cache_dir, offline=offline)[:limit]
+                for row in load_jsonl(f"{bipia}/{task}", cache_dir, offline=offline)[:limit]
             ]
             for task in ("email", "table", "code")
         }
-        text_attacks = load_json("bipia/text_attacks", cache_dir, offline=offline)
-        code_attacks = load_json("bipia/code_attacks", cache_dir, offline=offline)
+        text_attacks = load_json(f"{bipia}/text_attacks", cache_dir, offline=offline)
+        code_attacks = load_json(f"{bipia}/code_attacks", cache_dir, offline=offline)
         samples = bipia_samples(contexts, text_attacks, code_attacks)
         samples += injecagent_text_samples(cases)
         report.detection = run_detection(samples, threshold=threshold)
     if "agent" in tracks:
         report.agent = run_agent(cases)
+        emails = [
+            str(row["context"])
+            for row in load_jsonl(f"{bipia}/email", cache_dir, offline=offline)[:limit]
+        ]
+        report.benign = run_benign(benign_cases(emails))
+        if BIPIA not in report.sources:
+            report.sources = [BIPIA, INJECAGENT]
     return report

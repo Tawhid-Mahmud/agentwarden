@@ -176,6 +176,7 @@ Each detector returns signals with weights in `[0, 1]`, scaled by how dangerous 
 | Detector | Signals (weight at an external sink) | Evidence |
 |---|---|---|
 | `injection` | `instruction_override` 0.6, `role_hijack` 0.45, `system_prompt_probe` 0.35, `agent_addressing` 0.4, `concealment` 0.5, `markdown_exfil` 0.5, `hidden_html` 0.3, `action_directive` 0.2, `unicode_tag_smuggling` 0.7, `bidi_control_characters` 0.4, `zero_width_obfuscation` 0.35, `encoded_instructions` ≥0.5, `injection_in_arguments` 0.7×pattern | Matched snippet of the *normalized* text and its source segment |
+| `provenance` | `content_requested_action` 0.5 (names the tool's object) / 0.35, `request_in_user_voice` 0.6 | The request clause in the content, and the tool whose action it matches |
 | `taint` | `tainted_external_destination` 0.7, `tainted_internal_destination` 0.15, `tainted_path` 0.3 | The destination and the untrusted segment it came from |
 | `secrets` | `secret_in_arguments` 0.8 external / 0.4 write / 0.2 read | Kind and redacted preview |
 | `exfiltration` | `external_recipient` 0.25, `bulk_recipients` 0.3, `external_destination` 0.1, `data_in_url` 0.45, `encoded_payload` 0.3, `large_payload` 0.15 | Recipients, hosts, sizes |
@@ -187,7 +188,7 @@ Each detector returns signals with weights in `[0, 1]`, scaled by how dangerous 
 1. Keep the strongest signal per name.
 2. Within one detector, the strongest signal counts fully and corroborating signals count at 50%,
    since they're correlated: `d = 1 − (1−w₁)·Π(1−0.5·wᵢ)`.
-3. **Context-only cap**: when the `injection`/`llm_judge` evidence is located *only* in context
+3. **Context-only cap**: when the `injection`/`provenance`/`llm_judge` evidence is located *only* in context
    segments, `d ≤ 0.75`. A poisoned context means the agent *might* be compromised, which
    escalates side effects to a human. A hard deny needs call-level evidence as well (tainted
    destination, secrets, injected text in the arguments).
@@ -201,6 +202,21 @@ a phrasing-independent question: *did the destination of this outbound action co
 user, or from content the agent read?* The SDK supports this by recording the user's prompt and
 every tool output (`observe()`, `@guard(observe_output=True)`), with smuggled Unicode preserved
 (`ensure_ascii=False`, see the regression test).
+
+**Action provenance** (`risk/provenance.py`) asks the same question about the *action*: *did the
+user ask for this, or the content?* It finds clauses phrased as requests in untrusted content
+("please…", "can you…", "you must…", or an imperative verb followed by its object), groups their
+verbs into families (send, share, pay, delete, move, update, create, execute…), and compares them
+with the verbs in the tool's name (`august_smart_lock_grant_guest_access` → *share*) and in the
+user's request. If the content asked for what the tool does and the user didn't, the call gets
+`content_requested_action`. It's stronger when the request also names what the tool acts on
+("lock"). Tools that execute commands match any requested action unless the user asked to run
+something. Requests written in the user's voice ("Please move *my* files") get
+`request_in_user_voice`: data written *to* the user says "your". Under the default policy any
+provenance signal on a side-effecting call means approval (`approve-after-injection`). On the
+held-out InjecAgent split it cut plain-language attack success (without critical-tier approval)
+from 44.8% to 13.8%, at the cost of approval prompts when users paraphrase
+([BENCHMARK.md](BENCHMARK.md)). It's lexical: an injection that avoids request phrasing gets past it.
 
 ## Storage
 

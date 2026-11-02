@@ -351,7 +351,7 @@ def test_cli_basics(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     code, out = run(capsys, "policy", "validate", str(bad))
     assert code == 2 and "invalid policy" in out
     code, out = run(capsys, "policy", "test", "tests/policy/default_policy_cases.yaml")
-    assert code == 0 and "25/25 policy cases passed" in out
+    assert code == 0 and "26/26 policy cases passed" in out
 
 
 def test_cli_policy_test_failure(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

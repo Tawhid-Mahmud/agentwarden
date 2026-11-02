@@ -107,12 +107,13 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Out of scope / known limitations
 
-- **Detection is evadable.** On public data ([BENCHMARK.md](BENCHMARK.md)) the phrase detector
-  catches explicit overrides but 0% of InjecAgent's plain-language injections and under 1% of
-  BIPIA's. With the agent holding every scope, 22.6% of plain-language direct-harm scenarios get
-  through (data theft: 0%, thanks to taint tracking). Deterministic controls are the primary
-  defense: keep scopes narrow and mark dangerous tools critical. A semantic detector (the
-  optional Claude judge or a classifier) is the path to better recall.
+- **Detection is evadable.** The phrase detector only catches explicit overrides. Action provenance
+  catches most plain-language injections that ask for what the agent then does, but it is lexical:
+  text that avoids request phrasing ("the Taxes folder belongs in /Archive") or synonyms outside
+  its verb families get through. On the held-out InjecAgent split, 13.8% of plain-language
+  direct-harm attacks succeed if critical-tier approval is off ([BENCHMARK.md](BENCHMARK.md)).
+  Deterministic controls are the primary defense: keep scopes narrow and mark dangerous tools
+  critical. A semantic model (the optional Claude judge or a classifier) is the path further.
 - **Taint tracking is substring-based.** A destination the model rewrites (encodes, splits,
   paraphrases) may not match its untrusted source. Research-grade information-flow control is
   future work.

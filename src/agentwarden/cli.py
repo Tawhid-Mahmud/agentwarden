@@ -231,6 +231,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
             threshold=args.threshold,
             limit=args.limit,
             offline=args.offline,
+            split=args.split,
         )
     except ConfigurationError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -247,6 +248,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         max_fpr=args.max_fpr,
         max_asr=args.max_asr,
         min_utility=args.min_utility,
+        max_false_alarms=args.max_false_alarms,
     )
     for failure in failures:
         print(f"GATE FAILED: {failure}", file=sys.stderr)
@@ -462,6 +464,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--threshold", type=float, default=0.3, help="detector flag threshold")
     p.add_argument("--limit", type=int, help="use only the first N cases of each dataset file")
+    p.add_argument(
+        "--split",
+        choices=["all", "dev", "test"],
+        default="all",
+        help="dev: for developing detectors; test: held out; all: the reported numbers",
+    )
     p.add_argument("--cache-dir", help="dataset cache (default ~/.cache/agentwarden/benchmarks)")
     p.add_argument("--offline", action="store_true", help="use cached datasets only")
     p.add_argument("--markdown", help="also write the Markdown report here")
@@ -471,6 +479,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-fpr", type=float, help="gate: false-positive rate on benign documents")
     p.add_argument("--max-asr", type=float, help="gate: agent-track attack success rate")
     p.add_argument("--min-utility", type=float, help="gate: agent-track utility")
+    p.add_argument(
+        "--max-false-alarms", type=float, help="gate: risk-engine flags on benign user actions"
+    )
     p.set_defaults(func=cmd_bench)
 
     p = sub.add_parser("eval", help="evaluate injection detection on a labeled corpus")

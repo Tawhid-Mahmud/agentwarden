@@ -50,11 +50,14 @@ rules:
 
   - id: approve-after-injection
     description: >-
-      The agent read content with instructions aimed at it (or put them in arguments). Whatever it
+      The agent read content with instructions aimed at it (or put them in arguments), or the
+      action it is about to take was requested by that content rather than the user. Whatever it
       does next with side effects, a human confirms, however low the tool's own risk.
     effect: require_approval
     when:
-      - { field: risk.detectors, op: contains, value: injection }
+      - any:
+          - { field: risk.detectors, op: contains, value: injection }
+          - { field: risk.detectors, op: contains, value: provenance }
       - { field: tool.side_effect, op: in, value: [write, external] }
 
   - id: approve-elevated-risk

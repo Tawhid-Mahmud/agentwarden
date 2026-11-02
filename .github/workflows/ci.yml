@@ -122,7 +122,8 @@ jobs:
       - name: Run benchmark with regression gates
         run: >-
           agentwarden bench --quiet --markdown benchmark.md --json benchmark.json
-          --min-recall 0.40 --max-fpr 0.02 --max-asr 0.15 --min-utility 0.99
+          --min-recall 0.55 --max-fpr 0.02 --max-asr 0.03 --min-utility 0.99
+          --max-false-alarms 0.05
       - name: Publish results
         if: always()
         run: test -f benchmark.md && cat benchmark.md >> "$GITHUB_STEP_SUMMARY" || true

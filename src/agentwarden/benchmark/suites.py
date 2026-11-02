@@ -14,10 +14,12 @@ Two tracks:
 from __future__ import annotations
 
 import ast
+import contextlib
+import hashlib
 import json
 import re
 import tempfile
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -36,7 +38,8 @@ from agentwarden.models import (
     Decision,
     TokenRequest,
 )
-from agentwarden.risk.detectors import Detector
+from agentwarden.risk.detectors import Detector, InjectionDetector
+from agentwarden.risk.provenance import ActionProvenanceDetector
 
 BENCHMARK_DATA = resources.files("agentwarden") / "data" / "benchmarks"
 Position = Literal["start", "middle", "end"]
@@ -178,7 +181,14 @@ def run_detection(
     threshold: float = 0.3,
     detectors: Sequence[Detector] | None = None,
 ) -> dict[str, DetectionResult]:
-    """Score each sample as untrusted context; results per dataset."""
+    """Score each sample as untrusted context; results per dataset.
+
+    By default the detectors that judge text alone: injection, and the user-voice part of
+    action provenance (whether a call's action came from the content needs a real call, so it
+    is measured by the agent track).
+    """
+    if detectors is None:
+        detectors = [InjectionDetector(), ActionProvenanceDetector(call_level=False)]
     by_id = {s.id: s for s in samples}
     corpus = Corpus(samples=[CorpusSample(id=s.id, label=s.label, text=s.text) for s in samples])
     results: dict[str, DetectionResult] = {}
@@ -217,6 +227,14 @@ class AgentCase:
     user_step: Step
     tool_response: str
     attacker_steps: tuple[Step, ...]
+    attacker_instruction: str = ""
+
+    @property
+    def split(self) -> Literal["dev", "test"]:
+        """InjecAgent has no official split. Cases are split by attacker instruction, so the
+        test half's attacks are never seen while developing detectors."""
+        digest = hashlib.sha256(self.attacker_instruction.encode("utf-8")).digest()
+        return "dev" if digest[0] % 2 == 0 else "test"
 
 
 def snake(name: str) -> str:
@@ -280,6 +298,7 @@ def injecagent_cases(
                 user_step=Step(case["User Tool"], _literal_dict(str(case["Tool Parameters"]))),
                 tool_response=response,
                 attacker_steps=tuple(steps),
+                attacker_instruction=str(case["Attacker Instruction"]),
             )
         )
     return cases
@@ -382,6 +401,18 @@ def run_agent(
         raise ValueError(f"tools without a classification: {', '.join(sorted(missing))}")
     policy = policy_path or guarded_allow_policy()
     result = AgentResult(policy=policy.name)
+    with _bench_gateway(classes, policy, detectors) as (gateway, clock):
+        user = gateway.directory.users["user"]
+        for n, case in enumerate(cases):
+            clock.now += 3600  # independent sessions: no velocity carry-over between cases
+            result.cases.append(_run_case(gateway, user, case, f"bench-agent-{n}"))
+    return result
+
+
+@contextlib.contextmanager
+def _bench_gateway(
+    classes: Mapping[str, tuple[str, str]], policy: Path, detectors: Sequence[Detector]
+) -> Iterator[tuple[Gateway, _Clock]]:
     clock = _Clock()
     with tempfile.TemporaryDirectory() as tmp:
         directory_path = Path(tmp) / "directory.yaml"
@@ -393,21 +424,122 @@ def run_agent(
             rate_limit_per_agent=0,
         )
         with Gateway.build(settings, clock=clock, extra_detectors=detectors) as gateway:
-            user = gateway.directory.users["user"]
-            for n, case in enumerate(cases):
-                clock.now += 3600  # independent sessions: no velocity carry-over between cases
-                result.cases.append(_run_case(gateway, user, case, f"bench-agent-{n}"))
+            yield gateway, clock
+
+
+def _new_agent(gateway: Gateway, user: Any, agent_id: str, tools: Iterable[str]) -> str:
+    # A fresh agent per case, so behavioral baselines don't leak between scenarios.
+    scopes = sorted({f"bench:{snake(t)}" for t in tools})
+    gateway.registry.register(
+        Agent(id=agent_id, name=agent_id, owner="user", scope_ceiling=["bench:*"])
+    )
+    return gateway.issue_token(user, TokenRequest(agent_id=agent_id, scopes=scopes)).access_token
+
+
+# ===================================================================== benign actions
+@dataclass(frozen=True)
+class BenignCase:
+    id: str
+    tool: str
+    args: dict[str, Any]
+    request: str
+    phrasing: Literal["direct", "paraphrase"]
+    document_source: Literal["bipia", "work"]
+    document: str
+
+
+@dataclass(frozen=True)
+class BenignOutcome:
+    case: BenignCase
+    decision: Decision
+    rules: tuple[str, ...]
+
+    @property
+    def flagged_by_risk(self) -> bool:
+        """Held or denied because of the risk engine (a false alarm), not the tool's tier."""
+        return bool(RISK_RULES & set(self.rules))
+
+
+@dataclass
+class BenignResult:
+    outcomes: list[BenignOutcome] = field(default_factory=list)
+
+    def false_alarm_rate(self, outcomes: Iterable[BenignOutcome] | None = None) -> float:
+        items = list(self.outcomes if outcomes is None else outcomes)
+        return sum(o.flagged_by_risk for o in items) / len(items) if items else 0.0
+
+    def allowed_rate(self) -> float:
+        n = len(self.outcomes)
+        return sum(o.decision is Decision.ALLOW for o in self.outcomes) / n if n else 0.0
+
+    def group(self, key: Callable[[BenignOutcome], str]) -> dict[str, list[BenignOutcome]]:
+        groups: dict[str, list[BenignOutcome]] = {}
+        for outcome in self.outcomes:
+            groups.setdefault(key(outcome), []).append(outcome)
+        return dict(sorted(groups.items()))
+
+
+def benign_cases(emails: Sequence[str]) -> list[BenignCase]:
+    """Every benign action, in both phrasings, after every document (real emails and the
+    bundled work emails)."""
+    spec = yaml.safe_load((BENCHMARK_DATA / "benign_actions.yaml").read_text(encoding="utf-8"))
+    documents: list[tuple[Literal["bipia", "work"], str]] = [
+        *(("bipia", e) for e in emails),
+        *(("work", d) for d in spec["documents"]),
+    ]
+    cases = []
+    for action in spec["actions"]:
+        for phrasing in ("direct", "paraphrase"):
+            for n, (source, document) in enumerate(documents):
+                cases.append(
+                    BenignCase(
+                        id=f"benign-{snake(action['tool'])}-{phrasing}-{source}-{n}",
+                        tool=action["tool"],
+                        args=dict(action["args"]),
+                        request=action[phrasing],
+                        phrasing=phrasing,
+                        document_source=source,
+                        document=document,
+                    )
+                )
+    return cases
+
+
+def run_benign(
+    cases: Sequence[BenignCase],
+    *,
+    policy_path: Path | None = None,
+    tool_classes: Mapping[str, tuple[str, str]] | None = None,
+    detectors: Sequence[Detector] = (),
+) -> BenignResult:
+    classes = tool_classes or load_tool_classes()
+    result = BenignResult()
+    with _bench_gateway(classes, policy_path or guarded_allow_policy(), detectors) as (
+        gateway,
+        clock,
+    ):
+        user = gateway.directory.users["user"]
+        for n, case in enumerate(cases):
+            clock.now += 3600
+            token = _new_agent(gateway, user, f"bench-benign-{n}", [case.tool])
+            decision = gateway.authorize(
+                token,
+                AuthorizeRequest(
+                    tool=snake(case.tool),
+                    args=case.args,
+                    user_prompt=case.request,
+                    context=[ContextSegment(source="email:inbox", content=case.document)],
+                ),
+            )
+            result.outcomes.append(
+                BenignOutcome(case, decision.decision, tuple(decision.matched_rules))
+            )
     return result
 
 
 def _run_case(gateway: Gateway, user: Any, case: AgentCase, agent_id: str) -> CaseResult:
-    # A fresh agent per case, so behavioral baselines don't leak between scenarios.
-    tools = [case.user_step, *case.attacker_steps]
-    scopes = sorted({f"bench:{snake(s.tool)}" for s in tools})
-    gateway.registry.register(
-        Agent(id=agent_id, name=agent_id, owner="user", scope_ceiling=["bench:*"])
-    )
-    token = gateway.issue_token(user, TokenRequest(agent_id=agent_id, scopes=scopes)).access_token
+    tools = [s.tool for s in (case.user_step, *case.attacker_steps)]
+    token = _new_agent(gateway, user, agent_id, tools)
 
     def call(step: Step, context: list[ContextSegment]) -> AuthorizationResult:
         return gateway.authorize(

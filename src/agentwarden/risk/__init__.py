@@ -12,9 +12,11 @@ from agentwarden.risk.detectors import (
     redact_obj,
 )
 from agentwarden.risk.engine import RiskEngine, combine, noisy_or
+from agentwarden.risk.provenance import ActionProvenanceDetector
 from agentwarden.risk.text import CallFacts, compute_facts, flatten_strings
 
 __all__ = [
+    "ActionProvenanceDetector",
     "BehaviorAnomalyDetector",
     "CallFacts",
     "DetectionContext",

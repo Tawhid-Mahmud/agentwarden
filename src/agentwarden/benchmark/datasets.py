@@ -96,6 +96,32 @@ FILES: dict[str, DatasetFile] = {
         "benchmark/code_attack_test.json",
         "892545c5aaec0645b1ded65dc7816b3d70e9ef4eadcba2301a7a3db93676b6e0",
     ),
+    # BIPIA's training split: used while developing detectors, never for reported numbers.
+    "bipia-train/email": DatasetFile(
+        BIPIA,
+        "benchmark/email/train.jsonl",
+        "82207193cb8ce06713eeb7c33ca0716446613512e2ad9303b302ba14d425ddd4",
+    ),
+    "bipia-train/table": DatasetFile(
+        BIPIA,
+        "benchmark/table/train.jsonl",
+        "ae1c3ff25733fb3ff1a35bda3009716f4d25a17ae6833c73521be0411d576494",
+    ),
+    "bipia-train/code": DatasetFile(
+        BIPIA,
+        "benchmark/code/train.jsonl",
+        "5e6879b621a5cefe265a5b41b7ed0be632536f658f6097baf85a28b9abcb3115",
+    ),
+    "bipia-train/text_attacks": DatasetFile(
+        BIPIA,
+        "benchmark/text_attack_train.json",
+        "63f95d3e67eac4178cdabdbdaf192cd05f2b6ed0702b578f1d30d556e5155670",
+    ),
+    "bipia-train/code_attacks": DatasetFile(
+        BIPIA,
+        "benchmark/code_attack_train.json",
+        "fe515080b6da2b5c0b67ca7ba2a3b3c2ce57c48f45733c475ebc813cba118484",
+    ),
     "injecagent/dh_base": DatasetFile(
         INJECAGENT,
         "data/test_cases_dh_base.json",

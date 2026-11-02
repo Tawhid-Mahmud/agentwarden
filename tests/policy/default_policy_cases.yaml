@@ -161,6 +161,19 @@ cases:
     expect: require_approval
     expect_rules: [approve-after-injection]
 
+  - name: an action requested by the content, not the user, needs approval
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+      risk:
+        score: 0.28
+        level: low
+        detectors: [provenance]
+        signals: [content_requested_action]
+    expect: require_approval
+    expect_rules: [approve-after-injection]
+
   - name: injected instructions don't block reading
     input:
       agent: { id: inbox-assistant, trust_tier: standard }

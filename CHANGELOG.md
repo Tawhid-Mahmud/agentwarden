@@ -11,8 +11,16 @@ All notable changes to this project are documented here. The format follows
   utility, per attack type) and the injection detector on BIPIA documents and attacks (recall per
   category, false positives on real emails, tables and code). Datasets are fetched from pinned
   commits, verified by SHA-256 and cached, never redistributed. A CI job runs it with regression
-  gates and publishes the report. Current results: 11.3% attack success (0% for data stealing),
-  100% utility, detector recall 42.6% at a 0.5% false-positive rate.
+  gates and publishes the report.
+- **Action-provenance detector** (`provenance`): flags side-effecting calls that do what untrusted
+  content *asked for* rather than what the user asked for (`content_requested_action`), and
+  requests written in the user's voice inside data (`request_in_user_voice`). This catches
+  politely worded injections that contain no "ignore previous instructions". The default policy
+  holds such calls for approval. On the held-out InjecAgent split: attack success 8.6% → 1.7%,
+  and 24.1% → 8.6% without critical-tier approval; benign-action false alarms 1.7% → 3.2%.
+- Benchmark: a benign-action false-alarm set (`--max-false-alarms`), and dev/test splits
+  (`--split`): detectors are developed on BIPIA's training files and half of InjecAgent, and the
+  held-out half is reported.
 - **DPoP sender-constrained tokens** (RFC 9449): send a `DPoP` proof when requesting a token
   (`POST /v1/tokens` or `/v1/token/exchange`) and it is bound to the agent's key (`cnf.jkt`,
   `token_type: DPoP`). Bound tokens must be presented as `Authorization: DPoP` with a fresh proof
