@@ -55,6 +55,8 @@ long-lived API key. Three things go wrong:
   expiring, with separation of duties (approver role, no self-approval).
 - **Tamper-evident audit**: SHA-256 hash chain, secrets redacted, Ed25519-signed checkpoints that
   also expose truncation.
+- **SIEM export and OpenTelemetry**: stream the audit trail as OCSF 1.3 events to a file or HTTPS
+  collector (the exporter stops if exported history was rewritten), and trace and count every decision.
 - **Least-privilege analyzer**: unused or wildcard scopes, dormant agents, deny-rate spikes and
   injection exposure, reported as Markdown or JSON.
 - **OIDC sign-in**: users authenticate with your identity provider and exchange the ID token for an
@@ -79,7 +81,7 @@ flowchart LR
 ```
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) ·
-[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
+[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/SIEM.md](docs/SIEM.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
 
 ## Quickstart
 
@@ -358,6 +360,21 @@ another key, proofs for another method, URL or token, stale proofs, and any proo
 Set `AGENTWARDEN_DPOP_REQUIRED=true` to refuse unbound tokens entirely, and set
 `AGENTWARDEN_PUBLIC_URL` to the URL clients use when AgentWarden runs behind a proxy, since proofs
 are checked against it.
+
+### 9. Send the audit trail to your SIEM, and decisions to your tracing
+
+```bash
+agentwarden audit export --sink /var/log/agentwarden/ocsf.jsonl            # OCSF, once
+agentwarden audit export --follow --sink https://collector.example/hook   # keep streaming
+AGENTWARDEN_OTEL=true OTEL_EXPORTER_OTLP_ENDPOINT=http://otel:4318 agentwarden serve
+```
+
+Tokens map to OCSF Authentication events, tool calls to API Activity (with the human, the agent,
+the delegation chain, the risk level and the decision), and kill switches to Account Change.
+Delivery is at-least-once with a database cursor per destination, and the exporter checks the hash
+chain from the last entry it sent. Spans carry the decision, risk and matched rules but never user
+IDs, arguments or prompts, and each audit entry records its trace ID. See [docs/SIEM.md](docs/SIEM.md)
+for the full mapping, the pull API (`GET /v1/audit/export`) and detection ideas.
 
 ## Policy, briefly
 

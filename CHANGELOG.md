@@ -15,6 +15,17 @@ All notable changes to this project are documented here. The format follows
   `AGENTWARDEN_DPOP_REQUIRED`, `AGENTWARDEN_DPOP_MAX_AGE`, `AGENTWARDEN_PUBLIC_URL`.
 - `agentwarden dpop keygen` / `dpop thumbprint`, `agentwarden.sdk.DpopKey`, `dpop_key=` on
   `WardenClient` and `LocalWarden`, and `--dpop-key` on `mcp-proxy` (local mode binds automatically).
+- **SIEM export** (`agentwarden audit export`): the audit log as OCSF 1.3 events (or native JSON) to
+  stdout, a file, or an HTTPS collector, with a per-destination cursor in the database,
+  at-least-once delivery, `--follow`, and `--reset`. Each batch is checked against the hash of the
+  last exported entry, so rewriting exported history (including truncating and re-appending a
+  forged tail) stops the export with `TAMPERED`. `GET /v1/audit/export` offers the same as a
+  pull API with a `409` on a broken chain. See `docs/SIEM.md`.
+- **OpenTelemetry** (`pip install 'agentwarden[otel]'`, `AGENTWARDEN_OTEL=true`): spans for
+  authorization (with risk and policy child spans) and token issuance, exchange and delegation;
+  `agentwarden.decisions`, `agentwarden.authorize.duration` and `agentwarden.tokens` metrics. No user
+  IDs, arguments or prompts in telemetry; audit entries record their `trace_id`. The Docker image
+  includes the OTLP exporter.
 
 ## [0.2.0] - 2026-11-01
 

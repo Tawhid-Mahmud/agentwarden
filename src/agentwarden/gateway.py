@@ -64,6 +64,8 @@ from agentwarden.receipts import issue_receipt
 from agentwarden.risk import DetectionContext, Detector, RiskEngine, compute_facts, flatten_strings
 from agentwarden.risk.text import CallFacts
 from agentwarden.storage import Database
+from agentwarden.telemetry import Telemetry
+from agentwarden.telemetry import now as perf_now
 
 _NO_RISK = RiskAssessment(score=0.0, level=RiskLevel.LOW, signals=[])
 
@@ -98,8 +100,10 @@ class Gateway:
         audit: AuditLog,
         clock: Callable[[], float] = time.time,
         oidc: OidcVerifier | None = None,
+        telemetry: Telemetry | None = None,
     ) -> None:
         self.settings = settings
+        self.telemetry = telemetry or Telemetry()
         self.db = db
         self.directory = directory
         self.registry = registry
@@ -125,6 +129,7 @@ class Gateway:
         clock: Callable[[], float] = time.time,
         extra_detectors: Sequence[Detector] = (),
         oidc: OidcVerifier | None = None,
+        telemetry: Telemetry | None = None,
     ) -> Gateway:
         """Wire up a gateway from settings (defaults: environment variables)."""
         settings = settings or Settings.from_env()
@@ -160,6 +165,7 @@ class Gateway:
             audit=audit,
             clock=clock,
             oidc=oidc or cls._oidc_from(settings, clock),
+            telemetry=telemetry,
         )
 
     @staticmethod
@@ -197,6 +203,18 @@ class Gateway:
         )
 
     def issue_token(self, user: User, request: TokenRequest, jkt: str | None = None) -> IssuedToken:
+        attributes = {"agentwarden.agent_id": request.agent_id, "agentwarden.dpop": bool(jkt)}
+        with self.telemetry.span("agentwarden.token.issue", attributes) as span:
+            try:
+                issued = self._issue_token(user, request, jkt)
+            except AgentWardenError:
+                self.telemetry.record_token("issue", "denied", request.agent_id)
+                raise
+            span.set_attribute("agentwarden.scopes", list(issued.scope))
+        self.telemetry.record_token("issue", "issued", request.agent_id)
+        return issued
+
+    def _issue_token(self, user: User, request: TokenRequest, jkt: str | None) -> IssuedToken:
         agent = self.registry.require(request.agent_id)
         try:
             if self.settings.dpop_required and not jkt:
@@ -265,6 +283,11 @@ class Gateway:
         self, id_token: str, request: TokenRequest, jkt: str | None = None
     ) -> IssuedToken:
         """RFC 8693 token exchange: an IdP ID token becomes a scoped agent token."""
+        attributes = {"agentwarden.agent_id": request.agent_id, "agentwarden.dpop": bool(jkt)}
+        with self.telemetry.span("agentwarden.token.exchange", attributes):
+            return self._exchange_token(id_token, request, jkt)
+
+    def _exchange_token(self, id_token: str, request: TokenRequest, jkt: str | None) -> IssuedToken:
         user, identity = self._identify(id_token)
         token_hash = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
         if self.settings.oidc_one_time_tokens:
@@ -302,6 +325,20 @@ class Gateway:
         parent_token: str,
         request: DelegationRequest,
         dpop: DpopPresentation | None = None,
+    ) -> IssuedToken:
+        attributes = {"agentwarden.sub_agent_id": request.sub_agent_id}
+        with self.telemetry.span("agentwarden.token.delegate", attributes) as span:
+            try:
+                issued = self._delegate_token(parent_token, request, dpop)
+            except AgentWardenError:
+                self.telemetry.record_token("delegate", "denied", request.sub_agent_id)
+                raise
+            span.set_attribute("agentwarden.delegation_depth", len(issued.actor_chain) - 1)
+        self.telemetry.record_token("delegate", "issued", request.sub_agent_id)
+        return issued
+
+    def _delegate_token(
+        self, parent_token: str, request: DelegationRequest, dpop: DpopPresentation | None
     ) -> IssuedToken:
         parent = self._verify(parent_token, context="token.delegate", dpop=dpop)
         disabled = self._disabled_agent(parent)
@@ -485,6 +522,31 @@ class Gateway:
     def authorize(
         self, token: str, request: AuthorizeRequest, dpop: DpopPresentation | None = None
     ) -> AuthorizationResult:
+        started = perf_now()
+        with self.telemetry.span(
+            "agentwarden.authorize", {"agentwarden.tool": request.tool}
+        ) as span:
+            result = self._authorize(token, request, dpop, span.trace_id)
+            span.set_attribute("agentwarden.agent_id", result.agent_id)
+            span.set_attribute("agentwarden.decision", result.decision.value)
+            span.set_attribute("agentwarden.decision_id", result.decision_id)
+            span.set_attribute("agentwarden.risk.score", result.risk.score)
+            span.set_attribute("agentwarden.risk.level", result.risk.level.value)
+            span.set_attribute("agentwarden.risk.signals", result.risk.signal_names)
+            span.set_attribute("agentwarden.policy.rules", result.matched_rules)
+            span.set_attribute("agentwarden.approval_pending", result.approval_id is not None)
+        self.telemetry.record_decision(
+            result.decision.value, request.tool, result.agent_id or "", perf_now() - started
+        )
+        return result
+
+    def _authorize(
+        self,
+        token: str,
+        request: AuthorizeRequest,
+        dpop: DpopPresentation | None,
+        trace_id: str | None,
+    ) -> AuthorizationResult:
         claims = self._verify(token, context="authorize", tool=request.tool, dpop=dpop)
         retry_after = self.agent_limiter.hit(claims.agent_id)
         if retry_after is not None:
@@ -541,6 +603,7 @@ class Gateway:
                 "args_sha256": hashlib.sha256(canonical_json(request.args).encode()).hexdigest(),
                 "facts": facts.as_dict() if facts else None,
                 "context_sources": [s.source for s in request.context],
+                "trace_id": trace_id,
             },
         )
         return result
@@ -574,22 +637,24 @@ class Gateway:
 
         segments = tuple(request.context)
         facts = compute_facts(request.args, segments, self.directory.is_trusted_domain)
-        risk = self.risk.assess(
-            DetectionContext(
-                tool=tool,
-                args=request.args,
-                strings=tuple(flatten_strings(request.args)),
-                facts=facts,
-                user_prompt=request.user_prompt or "",
-                segments=segments,
-                agent_id=agent.id,
-                user_id=user.id,
-                is_trusted_domain=self.directory.is_trusted_domain,
+        with self.telemetry.span("agentwarden.risk"):
+            risk = self.risk.assess(
+                DetectionContext(
+                    tool=tool,
+                    args=request.args,
+                    strings=tuple(flatten_strings(request.args)),
+                    facts=facts,
+                    user_prompt=request.user_prompt or "",
+                    segments=segments,
+                    agent_id=agent.id,
+                    user_id=user.id,
+                    is_trusted_domain=self.directory.is_trusted_domain,
+                )
             )
-        )
-        policy = self.policy.evaluate(
-            self._policy_context(claims, user, agent, tool, request, facts, risk)
-        )
+        with self.telemetry.span("agentwarden.policy"):
+            policy = self.policy.evaluate(
+                self._policy_context(claims, user, agent, tool, request, facts, risk)
+            )
         outcome = _Outcome(policy.decision, list(policy.reasons), policy.matched_rules, risk)
         if outcome.decision is Decision.REQUIRE_APPROVAL:
             self._resolve_approval(outcome, claims, tool, request, decision_id)

@@ -164,7 +164,7 @@ gantt
 | v0.2 ✅ | **Postgres backend** | Multi-instance deployments. **Built:** `AGENTWARDEN_DATABASE_URL`, shared state across instances, CI on Postgres 16 |
 | v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |
 | v0.3 ✅ | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key. **Built:** RFC 9449 binding on issue, exchange and delegation; `agentwarden dpop keygen`; SDK and MCP proxy support |
-| v0.3 | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry |
+| v0.3 ✅ | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry. **Built:** `agentwarden audit export` (file/HTTPS, chain-checked cursor), `GET /v1/audit/export`, OTel spans and metrics ([SIEM.md](SIEM.md)) |
 | v0.3 ✅ | **Approver console** | Better HITL ergonomics; reduces approval fatigue. **Built:** `/console` with full review evidence |
 | v1.0 | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers |
 | v1.0 | **SPIFFE workload identity** | Cryptographic agent identity without shared secrets |

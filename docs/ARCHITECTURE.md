@@ -233,6 +233,12 @@ hash was recomputed, because the *next* row's `prev_hash` no longer matches. Tru
 leaves a valid shorter chain, so `checkpoint()` signs `{seq, hash, ts}` with Ed25519. An auditor who
 stores checkpoints elsewhere can prove the log still contains that head.
 
+The SIEM exporter (`siem/export.py`) does the same continuously: its cursor stores the last
+delivered `(seq, hash)`, and each batch is read with `entries_after(seq, hash)`, which re-hashes the
+anchor entry and every new one. Rewriting already-exported history stops the export instead of
+shipping it. OCSF formatting lives in `siem/ocsf.py`, and OpenTelemetry spans and metrics in
+`telemetry.py` (see [SIEM.md](SIEM.md)).
+
 ## Extension points
 
 - **Detectors**: anything with `name` and `inspect(ctx) -> list[RiskSignal]` (see

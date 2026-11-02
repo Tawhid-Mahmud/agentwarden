@@ -45,6 +45,11 @@ dependencies = [
 [project.optional-dependencies]
 llm = ["anthropic>=2.3"]
 postgres = ["psycopg[binary]>=3.2"]
+otel = [
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
 dev = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
@@ -53,6 +58,7 @@ dev = [
   "bandit>=1.7",
   "types-PyYAML>=6.0",
   "psycopg[binary]>=3.2",
+  "opentelemetry-sdk>=1.27",
   # Starlette's TestClient prefers httpx2 and warns (an error under -W error) without it.
   "httpx2>=2.0",
 ]

@@ -80,6 +80,9 @@ class Settings:
     #: Public base URL clients use (e.g. https://warden.example.com). DPoP proofs name the URL
     #: they were made for; behind a proxy, set this so AgentWarden checks the external URL.
     public_url: str | None = None
+    #: Export OpenTelemetry traces and metrics over OTLP/HTTP from ``agentwarden serve``
+    #: (endpoint from OTEL_EXPORTER_OTLP_ENDPOINT; needs ``agentwarden[otel]``).
+    otel_enabled: bool = False
 
     def __post_init__(self) -> None:
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
@@ -184,4 +187,5 @@ class Settings:
             dpop_required=(get("DPOP_REQUIRED") or "").lower() in _TRUE,
             dpop_max_age=get_int("DPOP_MAX_AGE", base.dpop_max_age),
             public_url=(get("PUBLIC_URL") or "").rstrip("/") or None,
+            otel_enabled=(get("OTEL") or "").lower() in _TRUE,
         )

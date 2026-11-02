@@ -45,6 +45,7 @@ deployment without rate limiting (a known gap).
 - [ ] With PostgreSQL, use a dedicated database user and TLS (`?sslmode=verify-full` in `AGENTWARDEN_DATABASE_URL`)
 - [ ] Bind agent tokens with DPoP and set `AGENTWARDEN_DPOP_REQUIRED=true`; set `AGENTWARDEN_PUBLIC_URL` behind a proxy
 - [ ] Keep token TTLs short (`AGENTWARDEN_DEFAULT_TOKEN_TTL`, default 900s)
+- [ ] Stream the audit log to a SIEM (`agentwarden audit export --follow`) and alert if the exporter reports `TAMPERED` or stops
 - [ ] Export signed audit checkpoints (`GET /v1/audit/checkpoint`) to storage the service can't modify
 - [ ] Run `agentwarden policy test` for your policy in CI
 - [ ] Make tools *require* an allow decision (don't rely on agents choosing to call `authorize`)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -39,6 +40,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
     if settings.admin_key is None:
         print("note: admin API disabled (set AGENTWARDEN_ADMIN_KEY to enable)", file=sys.stderr)
+    if settings.otel_enabled:
+        from agentwarden.telemetry import configure_otlp
+
+        configure_otlp()
+        print("OpenTelemetry: exporting traces and metrics over OTLP/HTTP", file=sys.stderr)
     uvicorn.run(create_app(settings=settings), host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -162,6 +168,44 @@ def cmd_audit_verify(args: argparse.Namespace) -> int:
     print(f"TAMPERED: entry {result.first_bad_seq}: {result.reason}")
     print(f"({result.checked} entries verified before it)")
     return 1
+
+
+def cmd_audit_export(args: argparse.Namespace) -> int:
+    from agentwarden.audit import AuditIntegrityError, AuditLog
+    from agentwarden.siem import AuditExporter, ExportError, open_sink
+    from agentwarden.storage import Database
+
+    db = Database(_settings(args).database)
+    try:
+        sink = open_sink(args.sink, token=os.environ.get("AGENTWARDEN_EXPORT_TOKEN"))
+    except ValueError as exc:
+        db.close()
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    exporter = AuditExporter(
+        db, AuditLog(db), sink, name=args.cursor, fmt=args.format, batch_size=args.batch
+    )
+    try:
+        if args.reset:
+            exporter.reset(to_head=args.reset == "head")
+        if args.follow:
+            exporter.follow(args.interval)
+            return 0
+        sent = exporter.export_all()
+        seq, _ = exporter.cursor()
+        print(f"exported {sent} entries (cursor {args.cursor!r} at seq {seq})", file=sys.stderr)
+        return 0
+    except AuditIntegrityError as exc:
+        print(f"TAMPERED: {exc}. Nothing after the last good entry was exported.", file=sys.stderr)
+        return 1
+    except ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        return 0
+    finally:
+        sink.close()
+        db.close()
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
@@ -351,6 +395,22 @@ def build_parser() -> argparse.ArgumentParser:
     p = audit.add_parser("verify", help="verify the audit hash chain")
     p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
     p.set_defaults(func=cmd_audit_verify)
+    p = audit.add_parser("export", help="export the audit log to a SIEM (OCSF or native JSON)")
+    p.add_argument(
+        "--sink",
+        default="-",
+        help="'-' for stdout, a file path, or an http(s) URL (token: AGENTWARDEN_EXPORT_TOKEN)",
+    )
+    p.add_argument("--format", choices=["ocsf", "native"], default="ocsf")
+    p.add_argument("--cursor", default="default", help="cursor name (one per destination)")
+    p.add_argument("--batch", type=int, default=500)
+    p.add_argument("--follow", action="store_true", help="keep exporting new entries")
+    p.add_argument("--interval", type=float, default=5.0, help="seconds between polls (--follow)")
+    p.add_argument(
+        "--reset", choices=["start", "head"], help="restart from the beginning or from now"
+    )
+    p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.set_defaults(func=cmd_audit_export)
 
     p = sub.add_parser("analyze", help="least-privilege report from the audit log")
     p.add_argument("--days", type=int, default=30)

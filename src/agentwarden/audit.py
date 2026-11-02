@@ -66,6 +66,15 @@ def entry_hash(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+class AuditIntegrityError(Exception):
+    """The audit chain doesn't continue from where a reader left off."""
+
+    def __init__(self, seq: int, reason: str) -> None:
+        super().__init__(f"audit chain broken at seq {seq}: {reason}")
+        self.seq = seq
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class VerifyResult:
     ok: bool
@@ -73,6 +82,21 @@ class VerifyResult:
     head_hash: str
     first_bad_seq: int | None = None
     reason: str = ""
+
+
+def _row_hash(row: sqlite3.Row) -> str:
+    """Recompute a stored row's hash from its columns."""
+    return entry_hash(
+        seq=row["seq"],
+        ts=row["ts"],
+        event_type=row["event_type"],
+        user_id=row["user_id"],
+        agent_id=row["agent_id"],
+        tool=row["tool"],
+        decision=row["decision"],
+        data=row["data"],
+        prev_hash=row["prev_hash"],
+    )
 
 
 def _row_to_event(row: sqlite3.Row) -> AuditEvent:
@@ -179,18 +203,7 @@ class AuditLog:
                     seq,
                     "prev_hash does not link to the previous entry",
                 )
-            recomputed = entry_hash(
-                seq=seq,
-                ts=row["ts"],
-                event_type=row["event_type"],
-                user_id=row["user_id"],
-                agent_id=row["agent_id"],
-                tool=row["tool"],
-                decision=row["decision"],
-                data=row["data"],
-                prev_hash=row["prev_hash"],
-            )
-            if recomputed != row["hash"]:
+            if _row_hash(row) != row["hash"]:
                 return VerifyResult(
                     False, checked, expected_prev, seq, "entry content does not match its hash"
                 )
@@ -255,6 +268,36 @@ class AuditLog:
                 decision, decision, since_iso, since_iso, max(1, min(limit, 100_000)),
             ),
         )  # fmt: skip
+        return [_row_to_event(r) for r in rows]
+
+    def entries_after(
+        self, seq: int, prev_hash: str = GENESIS_HASH, limit: int = 500
+    ) -> list[AuditEvent]:
+        """Up to ``limit`` entries after ``seq``, oldest first, checked against the chain.
+
+        ``prev_hash`` is the hash of entry ``seq`` as the caller last saw it (an exporter's
+        cursor). Raises :class:`AuditIntegrityError` if the entries don't continue that chain,
+        i.e. if anything at or after ``seq`` was modified, deleted or re-linked since.
+        """
+        if seq > 0:
+            anchor = self._db.query_one("SELECT * FROM audit_log WHERE seq = ?", (seq,))
+            if anchor is None or _row_hash(anchor) != prev_hash or anchor["hash"] != prev_hash:
+                raise AuditIntegrityError(seq, "the last exported entry was changed or removed")
+        rows = self._db.query(
+            "SELECT * FROM audit_log WHERE seq > ? ORDER BY seq LIMIT ?",
+            (seq, max(1, min(limit, 10_000))),
+        )
+        expected_seq, expected_prev = seq + 1, prev_hash
+        for row in rows:
+            if row["seq"] != expected_seq:
+                raise AuditIntegrityError(expected_seq, f"missing entry {expected_seq}")
+            if row["prev_hash"] != expected_prev:
+                raise AuditIntegrityError(
+                    row["seq"], "entry does not link to the previously exported entry"
+                )
+            if _row_hash(row) != row["hash"]:
+                raise AuditIntegrityError(row["seq"], "entry content does not match its hash")
+            expected_seq, expected_prev = row["seq"] + 1, row["hash"]
         return [_row_to_event(r) for r in rows]
 
     # ---------------------------------------------- ActivitySource (anomaly detector)

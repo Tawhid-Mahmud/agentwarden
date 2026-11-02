@@ -66,7 +66,7 @@ identity, delegated scopes, policy, provenance and human approval.
 | **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | Each ID token can be exchanged once (tracked in the database, so across instances); replays are refused and audited |
 | **T**ampering: changing token claims | Signature covers all claims | n/a |
 | **T**ampering: changing approved arguments (A2) | Approval bound to `sha256(user, actor chain, tool, args)`; mismatch → deny + `approval.misuse` event | n/a |
-| **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain → export checkpoints to WORM storage or a SIEM (v0.3) |
+| **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain, but not what was already exported: `agentwarden audit export` ships entries to a SIEM and stops with `TAMPERED` if exported history changes (built). Export continuously and alert on exporter failures |
 | **T**ampering: calling a tool directly, skipping AgentWarden (A2) | MCP proxy mode; signed authorization receipts that tools verify (bound to tool, argument hash, 60 s lifetime, single use) | Tools that don't verify receipts and are reachable outside MCP |
 | **R**epudiation: "the agent did it, not me" | Every decision names `user`, `agent`, full `actor_chain`, token `jti`, task and argument hash | n/a |
 | **I**nformation disclosure: data exfiltration via tool arguments (A1) | Taint tracking of destinations, secret detection, exfiltration heuristics, approval for external recipients and outbound writes | Exfiltration through *allowed* internal channels, or steganography in content, is not detected |
@@ -125,7 +125,7 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Security testing
 
-Adversarial cases covered by the test suite (367 tests):
+Adversarial cases covered by the test suite (407 tests):
 
 - **Tokens**: `alg=none`, HS256 key confusion using the public key, foreign signing keys, unknown
   `kid`, payload tampering, expiry, future `iat`, wrong audience, revocation (token, ancestor,
@@ -141,6 +141,7 @@ Adversarial cases covered by the test suite (367 tests):
   base64, CSS/HTML-hidden text, markdown image exfiltration, emoji ZWJ false-positive guard.
 - **Approvals**: replay, argument tampering, actor-chain changes, self-approval, missing role, expiry.
 - **Audit**: modified, deleted and re-linked rows, re-hashed rows, truncation versus checkpoints,
-  forged checkpoints.
+  forged checkpoints; the SIEM exporter refusing to continue after exported entries are edited,
+  deleted, re-linked, or truncated and replaced with a forged but internally consistent tail.
 - **Repository hygiene**: CI fails on any invisible or bidirectional control character in the
   source (Trojan Source, CVE-2021-42574); test secrets are assembled at runtime.

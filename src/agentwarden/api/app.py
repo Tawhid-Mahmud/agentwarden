@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from agentwarden import __version__
 from agentwarden.approvals import APPROVER_ROLE, ApprovalRequest, ApprovalStatus
+from agentwarden.audit import GENESIS_HASH, AuditIntegrityError
 from agentwarden.config import Settings
 from agentwarden.errors import (
     AgentWardenError,
@@ -50,6 +51,7 @@ from agentwarden.models import (
     User,
 )
 from agentwarden.ratelimit import RateLimiter
+from agentwarden.siem.export import format_event
 
 _STATUS = {
     AuthenticationError: 401,
@@ -562,6 +564,41 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
             "head_hash": result.head_hash,
             "first_bad_seq": result.first_bad_seq,
             "reason": result.reason,
+        }
+
+    @app.get("/v1/audit/export", tags=["audit"], response_model=None)
+    def audit_export(
+        _: AdminDep,
+        gateway: GatewayDep,
+        after_seq: Annotated[int, Query(ge=0)] = 0,
+        after_hash: Annotated[str | None, Query(pattern=r"^[0-9a-f]{64}$")] = None,
+        format: Literal["ocsf", "native"] = "ocsf",
+        limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+    ) -> dict[str, Any] | JSONResponse:
+        """Pull-based export: page through the chain, oldest first, keeping your own cursor.
+
+        Pass back ``next.after_seq`` and ``next.after_hash``; a ``409`` means entries you
+        already have were changed or removed since (the chain no longer continues from them).
+        """
+        if after_hash is None:
+            after_hash = GENESIS_HASH
+            if after_seq:
+                row = gateway.db.query_one("SELECT hash FROM audit_log WHERE seq = ?", (after_seq,))
+                after_hash = row["hash"] if row else ""
+        try:
+            events = gateway.audit.entries_after(after_seq, after_hash, limit)
+        except AuditIntegrityError as exc:
+            return JSONResponse(
+                {"error": "AuditIntegrityError", "detail": str(exc), "seq": exc.seq},
+                status_code=409,
+            )
+        last_seq, last_hash = (
+            (events[-1].seq, events[-1].hash) if events else (after_seq, after_hash)
+        )
+        return {
+            "format": format,
+            "events": [format_event(e, format) for e in events],
+            "next": {"after_seq": last_seq, "after_hash": last_hash},
         }
 
     @app.get("/v1/audit/checkpoint", tags=["audit"])

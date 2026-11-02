@@ -17,7 +17,7 @@ RUN useradd --create-home --uid 10001 warden \
  && mkdir -p /data /keys \
  && chown warden:warden /data /keys
 COPY --from=build /dist/*.whl /tmp/
-RUN pip install --no-cache-dir "$(ls /tmp/*.whl)[postgres]" && rm -f /tmp/*.whl
+RUN pip install --no-cache-dir "$(ls /tmp/*.whl)[postgres,otel]" && rm -f /tmp/*.whl
 USER warden
 WORKDIR /home/warden
 EXPOSE 8000
