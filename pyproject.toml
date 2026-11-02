@@ -59,6 +59,7 @@ dev = [
   "types-PyYAML>=6.0",
   "psycopg[binary]>=3.2",
   "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
   # Starlette's TestClient prefers httpx2 and warns (an error under -W error) without it.
   "httpx2>=2.0",
 ]
