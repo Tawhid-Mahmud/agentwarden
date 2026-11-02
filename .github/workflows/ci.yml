@@ -45,12 +45,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_PASSWORD: postgres
+          # Throwaway container reachable only from this runner: no password needed.
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      AGENTWARDEN_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      AGENTWARDEN_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
