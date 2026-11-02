@@ -44,6 +44,7 @@ deployment without rate limiting (a known gap).
 - [ ] Have sensitive tools verify authorization receipts (`agentwarden.receipts.ReceiptVerifier`)
 - [ ] With PostgreSQL, use a dedicated database user and TLS (`?sslmode=verify-full` in `AGENTWARDEN_DATABASE_URL`)
 - [ ] Bind agent tokens with DPoP and set `AGENTWARDEN_DPOP_REQUIRED=true`; set `AGENTWARDEN_PUBLIC_URL` behind a proxy
+- [ ] With the OPA backend, run OPA next to AgentWarden (sidecar/localhost) or over TLS with `AGENTWARDEN_OPA_TOKEN`: whoever answers for OPA decides every call
 - [ ] Keep token TTLs short (`AGENTWARDEN_DEFAULT_TOKEN_TTL`, default 900s)
 - [ ] Stream the audit log to a SIEM (`agentwarden audit export --follow`) and alert if the exporter reports `TAMPERED` or stops
 - [ ] Export signed audit checkpoints (`GET /v1/audit/checkpoint`) to storage the service can't modify

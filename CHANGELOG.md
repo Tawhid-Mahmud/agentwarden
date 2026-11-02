@@ -18,6 +18,14 @@ All notable changes to this project are documented here. The format follows
   politely worded injections that contain no "ignore previous instructions". The default policy
   holds such calls for approval. On the held-out InjecAgent split: attack success 8.6% → 1.7%,
   and 24.1% → 8.6% without critical-tier approval; benign-action false alarms 1.7% → 3.2%.
+- **Cedar and OPA policy backends** (`AGENTWARDEN_POLICY_BACKEND=yaml|cedar|opa`,
+  `docs/POLICY_BACKENDS.md`). Cedar runs in-process (`pip install 'agentwarden[cedar]'`); each call
+  is asked as `call` and `call_unattended`, so `forbid` on the latter means approval. OPA is asked
+  through its Data API (`AGENTWARDEN_OPA_URL`, `_PATH`, `_TOKEN`, `_TIMEOUT`). Both fail closed:
+  an unreachable, slow or undefined OPA decision, or a Cedar policy that errors during evaluation
+  (which Cedar would skip), means deny. The default policy is ported to `data/policy.cedar` and
+  `data/policy.rego` with the same rule IDs; `agentwarden policy test --backend cedar|opa` runs the
+  same suite against them, and CI does so against a real OPA server.
 - Benchmark: a benign-action false-alarm set (`--max-false-alarms`), and dev/test splits
   (`--split`): detectors are developed on BIPIA's training files and half of InjecAgent, and the
   held-out half is reported.

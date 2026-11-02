@@ -188,6 +188,7 @@ class Gateway:
         )
 
     def close(self) -> None:
+        self.policy.close()
         self.db.close()
 
     def __enter__(self) -> Gateway:

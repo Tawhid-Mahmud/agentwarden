@@ -162,7 +162,7 @@ gantt
 | v0.2 ✅ | **OIDC token exchange**: accept an IdP-issued ID token as `subject_token` | Replaces demo API keys with real user identity. **Built:** `POST /v1/token/exchange` (RFC 8693) |
 | v0.2 ✅ | **Key rotation**: key ring, `kid` selection, multi-key JWKS, grace periods | Limits blast radius of key compromise. **Built:** `agentwarden keys rotate/list/prune` and admin API |
 | v0.2 ✅ | **Postgres backend** | Multi-instance deployments. **Built:** `AGENTWARDEN_DATABASE_URL`, shared state across instances, CI on Postgres 16 |
-| v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |
+| v0.3 ✅ | **Cedar / OPA backends** | Lets organizations reuse existing policy investments. **Built:** `AGENTWARDEN_POLICY_BACKEND=cedar\|opa`, default policy ported to both, one test suite for all three ([POLICY_BACKENDS.md](POLICY_BACKENDS.md)) |
 | v0.3 ✅ | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key. **Built:** RFC 9449 binding on issue, exchange and delegation; `agentwarden dpop keygen`; SDK and MCP proxy support |
 | v0.3 ✅ | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry. **Built:** `agentwarden audit export` (file/HTTPS, chain-checked cursor), `GET /v1/audit/export`, OTel spans and metrics ([SIEM.md](SIEM.md)) |
 | v0.3 ✅ | **Approver console** | Better HITL ergonomics; reduces approval fatigue. **Built:** `/console` with full review evidence |

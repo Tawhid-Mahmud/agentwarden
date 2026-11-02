@@ -33,6 +33,8 @@ class PolicyBackend(Protocol):
 
     def evaluate(self, context: Mapping[str, Any]) -> PolicyDecision: ...
 
+    def close(self) -> None: ...
+
 
 def _deny(reason: str, rules: list[str] | None = None) -> PolicyDecision:
     return PolicyDecision(Decision.DENY, rules or [], [reason])
@@ -212,6 +214,9 @@ class CedarPolicy:
     @property
     def rule_count(self) -> int:
         return len(self._names)
+
+    def close(self) -> None:
+        pass
 
     def _ask(self, context: Mapping[str, Any], action: str) -> tuple[bool, list[str], list[str]]:
         request, entities = cedar_request(context, action)

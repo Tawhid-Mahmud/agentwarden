@@ -38,7 +38,7 @@ long-lived API key. Three things go wrong:
 - **Delegation for multi-agent systems**: sub-agents get *attenuated* tokens. Scopes can only
   narrow, lifetimes can't outlive the parent, depth is limited, cycles are rejected, and revoking a
   parent revokes every child.
-- **Policy-as-code**: YAML rules with `all`/`any`/`not` conditions over identity, tool, arguments,
+- **Policy-as-code** in YAML, **Cedar** or **OPA/Rego** (same tests for all three): YAML rules with `all`/`any`/`not` conditions over identity, tool, arguments,
   derived facts and risk. *deny > default-deny > require_approval > allow.* Policies have their own
   unit-test suites (`agentwarden policy test`).
 - **AI risk engine**:
@@ -85,7 +85,7 @@ flowchart LR
 ```
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) ·
-[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/SIEM.md](docs/SIEM.md) · [docs/BENCHMARK.md](docs/BENCHMARK.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
+[docs/POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md) · [docs/POLICY_BACKENDS.md](docs/POLICY_BACKENDS.md) · [docs/SIEM.md](docs/SIEM.md) · [docs/BENCHMARK.md](docs/BENCHMARK.md) · [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
 
 ## Quickstart
 
@@ -401,6 +401,13 @@ for the full mapping, the pull API (`GET /v1/audit/export`) and detection ideas.
 
 The bundled [default policy](src/agentwarden/data/policy.yaml) has 17 rules and a 26-case
 [test suite](tests/policy/default_policy_cases.yaml). Full language: [POLICY_REFERENCE.md](docs/POLICY_REFERENCE.md).
+
+**Already using Cedar or OPA?** Set `AGENTWARDEN_POLICY_BACKEND=cedar` (in-process) or `opa` (an
+OPA server). The default policy ships ported to [Cedar](src/agentwarden/data/policy.cedar) and
+[Rego](src/agentwarden/data/policy.rego) with the same rule IDs, and the same test suite passes on
+all three (`agentwarden policy test --backend cedar|opa ...`; CI runs it against a real OPA).
+Backends fail closed: an unreachable OPA or a Cedar policy that errors means deny. See
+[docs/POLICY_BACKENDS.md](docs/POLICY_BACKENDS.md).
 
 ## Detection quality
 

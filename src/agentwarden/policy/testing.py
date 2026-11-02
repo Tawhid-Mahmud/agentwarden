@@ -92,25 +92,28 @@ def run_suite(
             policy_path = Path(policy_path).with_suffix(".cedar")
     engine = load_backend(backend, policy_path=policy_path, opa_url=opa_url, opa_path=opa_path)
 
-    results = []
-    for case in suite.cases:
-        context = deep_merge(base_context(), case.input)
-        outcome = engine.evaluate(context)
-        missing = [r for r in case.expect_rules if r not in outcome.matched_rules]
-        passed = outcome.decision is case.expect and not missing
-        message = ""
-        if outcome.decision is not case.expect:
-            message = f"expected {case.expect.value}, got {outcome.decision.value}"
-        elif missing:
-            message = f"expected rules did not match: {', '.join(missing)}"
-        results.append(
-            CaseResult(
-                name=case.name,
-                passed=passed,
-                expected=case.expect,
-                actual=outcome.decision,
-                matched_rules=outcome.matched_rules,
-                message=message,
+    try:
+        results = []
+        for case in suite.cases:
+            context = deep_merge(base_context(), case.input)
+            outcome = engine.evaluate(context)
+            missing = [r for r in case.expect_rules if r not in outcome.matched_rules]
+            passed = outcome.decision is case.expect and not missing
+            message = ""
+            if outcome.decision is not case.expect:
+                message = f"expected {case.expect.value}, got {outcome.decision.value}"
+            elif missing:
+                message = f"expected rules did not match: {', '.join(missing)}"
+            results.append(
+                CaseResult(
+                    name=case.name,
+                    passed=passed,
+                    expected=case.expect,
+                    actual=outcome.decision,
+                    matched_rules=outcome.matched_rules,
+                    message=message,
+                )
             )
-        )
+    finally:
+        engine.close()
     return results

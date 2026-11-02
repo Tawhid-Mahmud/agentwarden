@@ -197,6 +197,9 @@ class PolicyEngine:
     def __init__(self, policy: Policy) -> None:
         self.policy = policy
 
+    def close(self) -> None:
+        pass
+
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> PolicyEngine:
         try:

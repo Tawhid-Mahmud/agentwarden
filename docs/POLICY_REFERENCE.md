@@ -1,5 +1,8 @@
 # Policy reference
 
+> This is AgentWarden's built-in YAML language. The same decisions can be written in Cedar or
+> OPA/Rego instead: see [POLICY_BACKENDS.md](POLICY_BACKENDS.md).
+
 Policies are YAML documents evaluated for every tool call that passes AgentWarden's deterministic
 checks (valid token, enabled agents, known tool, scope held and still entitled). The bundled
 policy lives at [`src/agentwarden/data/policy.yaml`](../src/agentwarden/data/policy.yaml). Point

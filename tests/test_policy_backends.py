@@ -216,7 +216,9 @@ def test_opa_minimal_answer_and_validation() -> None:
 def test_load_backend_and_settings(tmp_path: Path) -> None:
     assert isinstance(load_backend("yaml", policy_path=DEFAULT_POLICY_PATH), PolicyEngine)
     assert isinstance(load_backend("cedar", policy_path=DEFAULT_CEDAR_POLICY_PATH), CedarPolicy)
-    assert isinstance(load_backend("opa", opa_url="http://localhost:8181"), OpaPolicy)
+    remote = load_backend("opa", opa_url="http://localhost:8181")
+    assert isinstance(remote, OpaPolicy)
+    remote.close()
     for backend, kwargs in (("yaml", {}), ("cedar", {}), ("opa", {}), ("rego", {})):
         with pytest.raises(PolicyError):
             load_backend(backend, **kwargs)

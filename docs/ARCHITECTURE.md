@@ -259,7 +259,8 @@ shipping it. OCSF formatting lives in `siem/ocsf.py`, and OpenTelemetry spans an
 
 - **Detectors**: anything with `name` and `inspect(ctx) -> list[RiskSignal]` (see
   `risk.detectors.Detector`). Pass it via `Gateway.build(extra_detectors=[...])`.
-- **Policy**: YAML today. Cedar/OPA backends are on the roadmap behind the same `evaluate(context)` call.
+- **Policy**: anything with `evaluate(context) -> PolicyDecision` and `close()`. Built in: the YAML
+  engine, Cedar (in-process) and OPA (REST), all failing closed ([POLICY_BACKENDS.md](POLICY_BACKENDS.md)).
 - **Storage**: `Database` exposes a small surface (`execute`, `query`, `transaction`), with SQLite and
   PostgreSQL implementations.
 
