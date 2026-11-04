@@ -22,8 +22,8 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -53,8 +53,8 @@ jobs:
     env:
       AGENTWARDEN_TEST_DATABASE_URL: postgresql://postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -67,8 +67,8 @@ jobs:
     name: Security checks
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -86,8 +86,8 @@ jobs:
     name: Policy tests, detection quality gate & demo
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -106,12 +106,12 @@ jobs:
     name: Policy backends against a real OPA server
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - uses: open-policy-agent/setup-opa@v2
+      - uses: open-policy-agent/setup-opa@v2.4.0
         with:
           version: latest
       - name: Check the Rego port
@@ -139,15 +139,15 @@ jobs:
     name: Prompt-injection benchmark (BIPIA, InjecAgent)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
       - name: Install
         run: pip install -e .
       - name: Cache datasets (pinned commits, verified by SHA-256)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/agentwarden/benchmarks
           key: benchmark-datasets-${{ hashFiles('src/agentwarden/benchmark/datasets.py') }}
@@ -160,7 +160,7 @@ jobs:
       - name: Publish results
         if: always()
         run: test -f benchmark.md && cat benchmark.md >> "$GITHUB_STEP_SUMMARY" || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: benchmark-results
@@ -171,7 +171,7 @@ jobs:
     name: Docker image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build
         run: docker build -t agentwarden:ci .
       - name: Smoke test
