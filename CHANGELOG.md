@@ -70,8 +70,11 @@ policy can be written in Cedar or Rego.
   A decision bar stays pinned at the bottom. High-risk approvals need a second press, there are
   keyboard shortcuts (J/K, A, D, N, ?), a countdown to expiry, and a "Decided" view with each
   outcome. On a phone it becomes a list and a detail screen, and it works in light and dark mode.
-  It still runs under a strict CSP with no inline script or style and no web fonts. A test fails
-  if a new risk signal has no plain-language label.
+  The visual design is modern: the bundled Geist typeface (SIL OFL, served by AgentWarden from an
+  allowlist), zinc neutrals with a true-black dark mode, a frosted top bar, a floating decision bar,
+  segmented risk meters, and short entrance animations that respect reduced motion. It still runs
+  under a strict CSP with no inline script or style; the only policy change is `font-src 'self'`.
+  A test fails if a new risk signal has no plain-language label.
 - **New default policy rule `approve-after-injection`**: once injection is detected in what the
   agent read (or in its arguments), any call with side effects needs approval, whatever the tool's
   risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and

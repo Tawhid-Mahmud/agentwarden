@@ -171,3 +171,16 @@ def test_console_markup_supports_the_review_flow() -> None:
     script = (CONSOLE / "app.js").read_text(encoding="utf-8")
     assert 'case "a":' in script and 'case "d":' in script  # keyboard approve/deny
     assert "Confirm approval" in script  # high-risk approvals take a second press
+
+
+def test_bundled_fonts_are_served_from_an_allowlist(client: TestClient) -> None:
+    for name in ("Geist-Variable.woff2", "GeistMono-Variable.woff2"):
+        response = client.get(f"/console/fonts/{name}")
+        assert response.status_code == 200 and response.headers["content-type"] == "font/woff2"
+        assert response.content[:4] == b"wOF2"
+        assert "max-age" in response.headers["cache-control"]
+    for name in ("OFL-Geist.txt", "..%2Fapp.js", "app.js", "missing.woff2"):
+        assert client.get(f"/console/fonts/{name}").status_code == 404
+    csp = client.get("/console").headers["content-security-policy"]
+    assert "font-src 'self'" in csp and "font-src *" not in csp
+    assert (CONSOLE / "fonts" / "OFL-Geist.txt").is_file()  # the font license ships with the fonts

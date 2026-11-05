@@ -206,6 +206,11 @@
     return level(b) - level(a) || b.risk_score - a.risk_score || new Date(a.expires_at) - new Date(b.expires_at);
   }
 
+  function cap(text) {
+    const s = String(text);
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
+
   function actionTitle(tool) {
     const words = String(tool).split(/[_.\-]+/).filter(Boolean);
     const phrase = words.join(" ");
@@ -290,6 +295,9 @@
     node.textContent = "";
     node.append(icon(kind === "error" ? "alert" : "check"), el("span", { text: message }));
     node.hidden = false;
+    node.classList.remove("pop");
+    void node.offsetWidth; // restart the entrance animation
+    node.classList.add("pop");
     clearTimeout(toast.timer);
     toast.timer = setTimeout(() => { node.hidden = true; }, 4500);
   }
@@ -318,8 +326,8 @@
       const where = target(a.args_preview);
       const selected = a.id === state.selected;
       const meta = a.status === "pending"
-        ? [el("span", { class: "pill " + level, text: level }), el("span", { class: "item-time" + (remaining(a.expires_at) < 120 ? " soon" : ""), "data-expires": a.expires_at, text: timeLeft(a.expires_at) })]
-        : [el("span", { class: "pill " + a.status, text: a.status === "consumed" ? "used" : a.status }), el("span", { class: "item-time", text: ago(a.reviewed_at || a.expires_at) })];
+        ? [el("span", { class: "pill " + level, text: cap(level) }), el("span", { class: "item-time" + (remaining(a.expires_at) < 120 ? " soon" : ""), "data-expires": a.expires_at, text: timeLeft(a.expires_at) })]
+        : [el("span", { class: "pill " + a.status, text: cap(a.status === "consumed" ? "used" : a.status) }), el("span", { class: "item-time", text: ago(a.reviewed_at || a.expires_at) })];
       const item = el(
         "li",
         { class: "item " + level, role: "option", "aria-selected": String(selected), tabindex: selected ? "0" : "-1", "data-id": a.id,
@@ -364,7 +372,7 @@
     const quote = contentEvidence(signals);
     const chain = (details.actor_chain && details.actor_chain.length ? details.actor_chain : [a.agent_id]).join(" → ");
 
-    const sheet = el("div", { class: "sheet" });
+    const sheet = el("div", { class: "sheet enter" });
     sheet.append(el("button", { type: "button", class: "text-button back", onclick: closeDetail }, icon("back"), "All requests"));
 
     // Header: what, for whom, how risky, how long it can wait.
@@ -376,8 +384,8 @@
         { class: "d-head-top" },
         el("h1", { class: "d-title", id: "detail-title" }, actionTitle(a.tool), el("code", { text: a.tool })),
         el("div", { class: "d-pills" },
-          el("span", { class: "pill " + level }, el("span", { class: "dot" }), level + " risk · " + Number(a.risk_score).toFixed(2)),
-          a.status !== "pending" ? el("span", { class: "pill " + a.status, text: a.status === "consumed" ? "used" : a.status }) : null),
+          el("span", { class: "pill " + level }, el("span", { class: "dot" }), cap(level) + " risk · " + Number(a.risk_score).toFixed(2)),
+          a.status !== "pending" ? el("span", { class: "pill " + a.status, text: cap(a.status === "consumed" ? "used" : a.status) }) : null),
       ),
       el("div", { class: "d-sub" },
         el("span", {}, "Agent ", el("b", { text: chain })),
@@ -431,8 +439,8 @@
 
     // Evidence, strongest first, in plain words.
     const rows = signals.slice().sort((x, y) => y.weight - x.weight).map((s) => {
-      const meter = el("span");
-      setWidth(meter, s.weight);
+      const lit = s.weight > 0 ? Math.max(1, Math.round(s.weight * 5)) : 0;
+      const meter = Array.from({ length: 5 }, (_, i) => el("span", { class: "seg" + (i < lit ? " on" : "") }));
       return el("div", { class: "signal" },
         el("span", { class: "signal-label", text: SIGNALS[s.name] || s.name }),
         el("div", { class: "signal-meter" },

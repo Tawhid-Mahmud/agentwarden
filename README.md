@@ -484,3 +484,6 @@ security issues as described in [SECURITY.md](SECURITY.md).
 ## License
 
 [MIT](LICENSE) © 2026 Mohammad Tawhid Mahmud
+
+The approver console bundles the [Geist](https://vercel.com/font) typeface (© 2023 Vercel, in
+collaboration with basement.studio), licensed under the [SIL Open Font License 1.1](src/agentwarden/api/console/fonts/OFL-Geist.txt).

@@ -114,16 +114,19 @@ async def _read_params(request: Request) -> dict[str, str]:
 #: forbids inline script and every non-same-origin load, so even a rendering bug can't run code.
 CONSOLE_CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
-    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    "img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'"
 )
+#: Fonts bundled with the console (Geist, SIL Open Font License; see console/fonts/OFL-Geist.txt).
+CONSOLE_FONTS = frozenset({"Geist-Variable.woff2", "GeistMono-Variable.woff2"})
 
 
-def _console_asset(name: str, media_type: str) -> Response:
+def _console_asset(name: str, media_type: str, cache: str = "no-cache") -> Response:
     content = (resources.files("agentwarden.api") / "console" / name).read_bytes()
     return Response(
         content,
         media_type=media_type,
-        headers={"Content-Security-Policy": CONSOLE_CSP, "Cache-Control": "no-cache"},
+        headers={"Content-Security-Policy": CONSOLE_CSP, "Cache-Control": cache},
     )
 
 
@@ -481,6 +484,12 @@ def create_app(gateway: Gateway | None = None, settings: Settings | None = None)
     @app.get("/console/app.css", include_in_schema=False, response_model=None)
     def console_css() -> Response:
         return _console_asset("app.css", "text/css; charset=utf-8")
+
+    @app.get("/console/fonts/{name}", include_in_schema=False, response_model=None)
+    def console_font(name: str) -> Response:
+        if name not in CONSOLE_FONTS:  # an allowlist, so no path tricks
+            return JSONResponse({"error": "NotFound", "detail": "no such font"}, status_code=404)
+        return _console_asset("fonts/" + name, "font/woff2", "public, max-age=86400")
 
     # ----------------------------------------------------------------- admin
     @app.get("/v1/agents", tags=["admin"])
