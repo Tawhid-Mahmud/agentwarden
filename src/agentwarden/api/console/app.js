@@ -104,6 +104,88 @@
     toast.timer = setTimeout(() => { node.hidden = true; }, 4000);
   }
 
+  // ------------------------------------------------------------------ what the signals mean
+  // Plain-language labels for every risk signal the engine emits. Unknown names fall back to the
+  // raw name, so a new detector still shows up.
+  const SIGNALS = {
+    content_requested_action: "The content asked for this action, the user didn't",
+    request_in_user_voice: "Content gives orders as if it were the user",
+    instruction_override: "Content tells the AI to ignore its instructions",
+    role_hijack: "Content tries to give the AI a new role",
+    system_prompt_probe: "Content asks the AI to reveal its instructions",
+    agent_addressing: "Content addresses AI agents directly",
+    concealment: "Content asks to hide this from the user",
+    action_directive: "Content tells the reader to send data somewhere",
+    markdown_exfil: "Image link that would leak data in its URL",
+    hidden_html: "Text hidden from people with HTML or CSS",
+    unicode_tag_smuggling: "Invisible Unicode characters carry hidden text",
+    bidi_control_characters: "Text-direction tricks that disguise content",
+    zero_width_obfuscation: "Invisible characters split words to dodge filters",
+    encoded_instructions: "Encoded (base64) instructions",
+    injection_in_arguments: "Injected instructions copied into the arguments",
+    llm_injection_verdict: "AI judge flagged the content as an injection",
+    tainted_external_destination: "Destination came from content the agent read, not the user",
+    tainted_internal_destination: "Internal destination came from content the agent read",
+    tainted_path: "File path came from content the agent read",
+    secret_in_arguments: "Arguments contain what looks like a credential",
+    external_recipient: "Recipient is outside the organization",
+    bulk_recipients: "Many recipients at once",
+    external_destination: "Data goes to an outside host",
+    data_in_url: "Data packed into a URL",
+    encoded_payload: "Encoded data in the arguments",
+    large_payload: "Unusually large amount of data",
+    high_velocity: "Unusually many requests from this agent",
+    repeated_denials: "This agent was denied several times recently",
+    novel_sensitive_tool: "First time this agent uses this tool",
+    detector_error: "A risk check failed (treated as risky)",
+  };
+  const INJECTION = new Set([
+    "instruction_override", "role_hijack", "system_prompt_probe", "agent_addressing", "concealment",
+    "markdown_exfil", "hidden_html", "unicode_tag_smuggling", "bidi_control_characters",
+    "zero_width_obfuscation", "encoded_instructions", "injection_in_arguments", "llm_injection_verdict",
+  ]);
+  const RISK_ORDER = { critical: 3, high: 2, medium: 1, low: 0, none: 0 };
+
+  // The one-line answer to "why is this here?", from the most telling signal.
+  function verdict(signals) {
+    const has = (name) => signals.some((s) => s.name === name);
+    if (has("content_requested_action"))
+      return { alarm: true, text: "The content the agent read asked for this action. The user didn't." };
+    if (has("tainted_external_destination"))
+      return { alarm: true, text: "The destination came from content the agent read, not from the user's request." };
+    if (has("secret_in_arguments"))
+      return { alarm: true, text: "The arguments contain what looks like a credential." };
+    if (signals.some((s) => INJECTION.has(s.name)))
+      return { alarm: true, text: "Content the agent read contains instructions aimed at the AI." };
+    if (has("request_in_user_voice"))
+      return { alarm: true, text: "Content the agent read gives orders as if it were the user." };
+    return { alarm: false, text: "Nothing suspicious was detected. Policy asks a human to confirm this kind of action." };
+  }
+
+  // The strongest piece of evidence that came from content the agent read, if any.
+  function contentEvidence(signals) {
+    const fromContent = signals
+      .filter((s) => (s.location || "").startsWith("context:") && s.evidence)
+      .sort((a, b) => b.weight - a.weight);
+    if (!fromContent.length) return null;
+    const top = fromContent[0];
+    const quoted = /: '(.*)'$/.exec(top.evidence); // provenance evidence ends with the quoted request
+    return {
+      quoted: !!quoted,
+      text: quoted ? quoted[1] : top.evidence,
+      source: top.location.slice("context:".length),
+    };
+  }
+
+  function urgency(a, b) {
+    const level = (x) => RISK_ORDER[riskLevel(x)] || 0;
+    return (
+      level(b) - level(a) ||
+      b.risk_score - a.risk_score ||
+      new Date(a.expires_at) - new Date(b.expires_at)
+    );
+  }
+
   // ------------------------------------------------------------------ cards
   function block(title, content, wide) {
     return el("div", { class: "block" + (wide ? " wide" : "") }, el("span", { class: "label", text: title }), content);
@@ -121,8 +203,9 @@
           el(
             "div",
             {},
-            el("div", { class: "name", text: s.name + " (" + Number(s.weight).toFixed(2) + ")" }),
+            el("div", { class: "plain", text: SIGNALS[s.name] || s.name }),
             el("div", { class: "meter", "aria-hidden": "true" }, meter(s.weight)),
+            el("div", { class: "name", text: s.name + " · " + Number(s.weight).toFixed(2) }),
           ),
           el("div", { class: "evidence", text: (s.evidence || "") + (s.location ? "  [" + s.location + "]" : "") }),
         ),
@@ -160,10 +243,30 @@
       ),
     );
 
+    const signals = details.signals || [];
+    const call = verdict(signals);
+    const said = contentEvidence(signals);
+    const summary = el(
+      "div",
+      { class: "verdict" + (call.alarm ? " alarm" : "") },
+      el("strong", { text: call.text }),
+      said
+        ? el(
+            "blockquote",
+            { class: "said" },
+            el("span", { class: "label", text: (said.quoted ? "What the content said · " : "Found in ") + said.source }),
+            el("p", { text: said.text }),
+          )
+        : null,
+    );
+
+    const asked = el("div", {}, el("p", { class: "quote", text: details.user_prompt || "(not provided by the agent)" }));
+    if (details.task) asked.append(el("p", { class: "task", text: "Task: " + details.task }));
+
     const body = el(
       "div",
       { class: "body" },
-      block("The user asked", el("p", { class: "quote", text: details.user_prompt || "(not provided by the agent)" })),
+      block("The user asked", asked),
       block("Why it needs a human", el("ul", { class: "reasons" }, ...(approval.reasons || []).map((r) => el("li", { text: r })))),
       block("Risk evidence", signalList(details.signals), true),
       block("Arguments (secrets redacted)", el("pre", { class: "args", text: JSON.stringify(approval.args_preview, null, 2) }), true),
@@ -176,8 +279,9 @@
       ),
     );
 
-    const card = el("article", { class: "card risk-" + level, "data-id": approval.id, "aria-label": approval.tool + " request" }, head, body);
-    card.append(approval.status === "pending" ? actions(approval) : reviewed(approval));
+    const ids = el("div", { class: "ids", text: "Decision " + approval.decision_id + " · approval " + approval.id });
+    const card = el("article", { class: "card risk-" + level, "data-id": approval.id, "aria-label": approval.tool + " request" }, head, summary, body, ids);
+    card.append(approval.status === "pending" ? actions(approval, level) : reviewed(approval));
     return card;
   }
 
@@ -187,7 +291,7 @@
     return el("div", { class: "reviewed", text: approval.status + " " + who + note });
   }
 
-  function actions(approval) {
+  function actions(approval, level) {
     const own = state.me && approval.user_id === state.me.id;
     const noteId = "note-" + approval.id;
     const note = el("input", { type: "text", id: noteId, placeholder: "Note (optional)", maxlength: "1000", "aria-label": "Note" });
@@ -199,7 +303,26 @@
       bar.append(el("span", { class: "why", text: own ? "You can't review a request made on your behalf." : "Approver role required." }));
       return bar;
     }
+    const until = new Date(approval.expires_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const consequence = el("span", { class: "why", text: "Approving lets the agent run this exact call once, until " + until + "." });
+    bar.append(consequence);
+    const risky = level === "high" || level === "critical";
+    let armed = null;
     const decide = async (verb) => {
+      if (verb === "approve" && risky && !armed) {
+        // High-risk: approving a hijacked call is the costliest mistake, so ask twice.
+        approve.textContent = "Confirm approve";
+        approve.classList.add("armed");
+        consequence.textContent = "High risk. Check the evidence above, then confirm.";
+        armed = setTimeout(() => {
+          armed = null;
+          approve.textContent = "Approve";
+          approve.classList.remove("armed");
+          consequence.textContent = "Approving lets the agent run this exact call once, until " + until + ".";
+        }, 6000);
+        return;
+      }
+      clearTimeout(armed);
       approve.disabled = deny.disabled = true;
       try {
         await api("/v1/approvals/" + encodeURIComponent(approval.id) + "/" + verb, { method: "POST", body: { note: note.value } });
@@ -242,7 +365,7 @@
       const all = await api("/v1/approvals?limit=200");
       const pending = all.filter((a) => a.status === "pending");
       $("pending-count").textContent = String(pending.length);
-      render(state.tab === "pending" ? pending : all.filter((a) => a.status !== "pending").slice(0, 50));
+      render(state.tab === "pending" ? pending.sort(urgency) : all.filter((a) => a.status !== "pending").slice(0, 50));
       $("refreshed").textContent = "Updated " + new Date().toLocaleTimeString();
     } catch (error) {
       if (error.status === 401) { signOut("Your session expired. Sign in again."); return; }

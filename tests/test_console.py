@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import agentwarden.risk as risk_package
 from agentwarden.api import create_app
 from agentwarden.config import Settings
 from agentwarden.gateway import Gateway
@@ -136,3 +137,19 @@ def test_old_databases_gain_the_details_column(tmp_path: Path) -> None:
     assert ApprovalQueue(db).get("apr_old").details == {}
     Database(str(path)).close()  # running the migration again is harmless
     db.close()
+
+
+def test_every_risk_signal_has_a_plain_language_label() -> None:
+    """Reviewers see signals in plain words; a new detector signal needs a label in app.js."""
+    source = "\n".join(
+        p.read_text(encoding="utf-8") for p in Path(risk_package.__file__).parent.glob("*.py")
+    )
+    names = set(re.findall(r'name="([a-z_]+)"', source))
+    names |= set(re.findall(r'emit\(\s*"([a-z_]+)"', source))
+    names |= set(re.findall(r'_p\(\s*"([a-z_]+)"', source))
+    names |= set(re.findall(r'^\s+"([a-z_]+)",\n\s+0\.\d', source, re.M))  # _p("x",\n 0.6 ...)
+    names -= {"injection", "provenance", "taint", "secrets", "exfiltration", "anomaly", "llm_judge"}
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    labels = set(re.findall(r"^\s+([a-z_]+): \"", script, re.M))
+    assert len(names) >= 25, names
+    assert names <= labels, f"signals without a console label: {sorted(names - labels)}"

@@ -57,6 +57,14 @@ policy can be written in Cedar or Rego.
   includes the OTLP exporter.
 
 ### Changed
+- **Approver console**: each request opens with a one-line verdict in plain language ("The content
+  the agent read asked for this action. The user didn't.") and quotes what the content said.
+  Every risk signal has a readable label, with the technical name kept underneath. Pending requests
+  are sorted by risk, then score, then soonest expiry. Approving a high- or critical-risk request
+  takes a second, confirming click. The approve bar says what approving does (one run of this exact
+  call, until a given time), and each card shows its decision and approval IDs for matching against
+  the audit log and SIEM. The phone layout is tightened. A test fails if a new risk signal has no
+  console label.
 - **New default policy rule `approve-after-injection`**: once injection is detected in what the
   agent read (or in its arguments), any call with side effects needs approval, whatever the tool's
   risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and
