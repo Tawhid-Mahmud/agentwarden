@@ -153,3 +153,21 @@ def test_every_risk_signal_has_a_plain_language_label() -> None:
     labels = set(re.findall(r"^\s+([a-z_]+): \"", script, re.M))
     assert len(names) >= 25, names
     assert names <= labels, f"signals without a console label: {sorted(names - labels)}"
+
+
+def test_console_markup_supports_the_review_flow() -> None:
+    page = (CONSOLE / "index.html").read_text(encoding="utf-8")
+    for element_id in (
+        "queue",
+        "detail",
+        "tab-pending",
+        "tab-history",
+        "help",
+        "help-close",
+        "signin-form",
+    ):
+        assert f'id="{element_id}"' in page, element_id
+    assert "<form method=" not in page  # the CSP has form-action 'none'
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    assert 'case "a":' in script and 'case "d":' in script  # keyboard approve/deny
+    assert "Confirm approval" in script  # high-risk approvals take a second press

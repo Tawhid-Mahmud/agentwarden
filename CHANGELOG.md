@@ -57,14 +57,21 @@ policy can be written in Cedar or Rego.
   includes the OTLP exporter.
 
 ### Changed
-- **Approver console**: each request opens with a one-line verdict in plain language ("The content
-  the agent read asked for this action. The user didn't.") and quotes what the content said.
-  Every risk signal has a readable label, with the technical name kept underneath. Pending requests
-  are sorted by risk, then score, then soonest expiry. Approving a high- or critical-risk request
-  takes a second, confirming click. The approve bar says what approving does (one run of this exact
-  call, until a given time), and each card shows its decision and approval IDs for matching against
-  the audit log and SIEM. The phone layout is tightened. A test fails if a new risk signal has no
-  console label.
+- **Approver console redesigned** as an inbox. A queue of waiting requests, most urgent first,
+  sits next to the selected request. Each request reads in decision order:
+  - a plain-language verdict ("The request came from the content, not the user"), quoting the
+    request the content made in its original wording
+  - what the user asked, side by side with what the agent wants to do, with values that came from
+    content rather than the user highlighted inline
+  - risk evidence in plain words
+  - the policy rules involved
+  - raw arguments and IDs, collapsed behind a disclosure
+
+  A decision bar stays pinned at the bottom. High-risk approvals need a second press, there are
+  keyboard shortcuts (J/K, A, D, N, ?), a countdown to expiry, and a "Decided" view with each
+  outcome. On a phone it becomes a list and a detail screen, and it works in light and dark mode.
+  It still runs under a strict CSP with no inline script or style and no web fonts. A test fails
+  if a new risk signal has no plain-language label.
 - **New default policy rule `approve-after-injection`**: once injection is detected in what the
   agent read (or in its arguments), any call with side effects needs approval, whatever the tool's
   risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and

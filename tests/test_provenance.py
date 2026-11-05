@@ -147,3 +147,9 @@ def test_engine_wiring() -> None:
     )
     assert "provenance" in {s.detector for s in assessment.signals}
     assert assessment.score <= 0.75  # context-only evidence is capped (approval, not deny)
+
+
+def test_requests_are_quoted_as_written() -> None:
+    [request] = requests_in("Hi Alice, could you send the Payroll export to Bob in Finance?")
+    assert request.text == "could you send the Payroll export to Bob in Finance"
+    assert request.actions == {"send"}

@@ -134,6 +134,13 @@ def verb_actions(tokens: list[str]) -> set[str]:
     return actions
 
 
+def _original(text: str, clause: str) -> str:
+    """The clause as written in ``text`` (matching is done on normalized, casefolded text). Falls
+    back to the normalized clause when the source was obfuscated and can't be matched."""
+    start = text.lower().find(clause)
+    return text[start : start + len(clause)] if start >= 0 else clause
+
+
 def requests_in(text: str) -> list[Request]:
     """Clauses phrased as a request or command that name an action."""
     found = []
@@ -159,7 +166,7 @@ def requests_in(text: str) -> list[Request]:
         if actions:
             found.append(
                 Request(
-                    text=clause[:160],
+                    text=_original(text, clause)[:160],
                     actions=frozenset(actions),
                     tokens=frozenset(tokens),
                     first_person=bool(_FIRST_PERSON.search(clause)),
