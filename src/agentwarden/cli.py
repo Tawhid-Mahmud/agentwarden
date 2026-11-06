@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import sys
 import time
 from collections.abc import Sequence
@@ -39,6 +40,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
     if settings.admin_key is None:
         print("note: admin API disabled (set AGENTWARDEN_ADMIN_KEY to enable)", file=sys.stderr)
+    if settings.otel_enabled:
+        from agentwarden.telemetry import configure_otlp
+
+        configure_otlp()
+        print("OpenTelemetry: exporting traces and metrics over OTLP/HTTP", file=sys.stderr)
     uvicorn.run(create_app(settings=settings), host=args.host, port=args.port, log_level="info")
     return 0
 
@@ -111,9 +117,12 @@ def cmd_hash_key(args: argparse.Namespace) -> int:
 
 
 def cmd_policy_validate(args: argparse.Namespace) -> int:
-    from agentwarden.policy import PolicyEngine
+    from agentwarden.policy import CedarPolicy, PolicyEngine
 
-    path = Path(args.file) if args.file else Settings.from_env().policy_path
+    path = Path(args.file) if args.file else Settings.from_env().effective_policy_path
+    if path.suffix == ".cedar":
+        print(f"OK {path}: {CedarPolicy.from_file(path).rule_count} Cedar policies")
+        return 0
     policy = PolicyEngine.from_file(path).policy
     counts = {
         e: sum(1 for r in policy.rules if r.effect.value == e)
@@ -131,7 +140,12 @@ def cmd_policy_test(args: argparse.Namespace) -> int:
 
     failed = total = 0
     for suite in args.suites:
-        results = run_suite(suite, policy_path=args.policy)
+        results = run_suite(
+            suite,
+            policy_path=args.policy,
+            backend=args.backend,
+            opa_url=args.opa_url or os.environ.get("AGENTWARDEN_OPA_URL"),
+        )
         print(f"{suite}")
         for result in results:
             total += 1
@@ -164,6 +178,44 @@ def cmd_audit_verify(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_audit_export(args: argparse.Namespace) -> int:
+    from agentwarden.audit import AuditIntegrityError, AuditLog
+    from agentwarden.siem import AuditExporter, ExportError, open_sink
+    from agentwarden.storage import Database
+
+    db = Database(_settings(args).database)
+    try:
+        sink = open_sink(args.sink, token=os.environ.get("AGENTWARDEN_EXPORT_TOKEN"))
+    except ValueError as exc:
+        db.close()
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    exporter = AuditExporter(
+        db, AuditLog(db), sink, name=args.cursor, fmt=args.format, batch_size=args.batch
+    )
+    try:
+        if args.reset:
+            exporter.reset(to_head=args.reset == "head")
+        if args.follow:
+            exporter.follow(args.interval)
+            return 0
+        sent = exporter.export_all()
+        seq, _ = exporter.cursor()
+        print(f"exported {sent} entries (cursor {args.cursor!r} at seq {seq})", file=sys.stderr)
+        return 0
+    except AuditIntegrityError as exc:
+        print(f"TAMPERED: {exc}. Nothing after the last good entry was exported.", file=sys.stderr)
+        return 1
+    except ExportError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        return 0
+    finally:
+        sink.close()
+        db.close()
+
+
 def cmd_analyze(args: argparse.Namespace) -> int:
     from agentwarden.gateway import Gateway
 
@@ -174,6 +226,41 @@ def cmd_analyze(args: argparse.Namespace) -> int:
     else:
         print(report.to_markdown(), end="")
     return 0
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    from agentwarden.benchmark import run_benchmark
+    from agentwarden.errors import ConfigurationError
+
+    try:
+        report = run_benchmark(
+            tracks=args.track or ("detection", "agent"),
+            cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+            threshold=args.threshold,
+            limit=args.limit,
+            offline=args.offline,
+            split=args.split,
+        )
+    except ConfigurationError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    markdown = report.to_markdown()
+    if args.markdown:
+        Path(args.markdown).write_text(markdown, encoding="utf-8")
+    if args.json:
+        Path(args.json).write_text(json.dumps(report.to_dict(), indent=2) + "\n", encoding="utf-8")
+    if not args.quiet:
+        print(markdown, end="")
+    failures = report.check(
+        min_recall=args.min_recall,
+        max_fpr=args.max_fpr,
+        max_asr=args.max_asr,
+        min_utility=args.min_utility,
+        max_false_alarms=args.max_false_alarms,
+    )
+    for failure in failures:
+        print(f"GATE FAILED: {failure}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 def cmd_eval(args: argparse.Namespace) -> int:
@@ -215,7 +302,7 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
     import os
 
     from agentwarden.mcp import McpProxy, ToolMapping, run_stdio_proxy
-    from agentwarden.sdk import LocalWarden, WardenClient
+    from agentwarden.sdk import DpopKey, LocalWarden, WardenClient
     from agentwarden.sdk.client import _WardenBase
 
     # stdout carries the MCP protocol: every diagnostic goes to stderr.
@@ -244,19 +331,24 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
             print(f"error: unknown user {args.user!r}", file=sys.stderr)
             return 2
         try:
+            # The local proxy binds its own token to a throwaway DPoP key (RFC 9449).
+            dpop_key = DpopKey()
             issued = gateway.issue_token(
-                user, TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task)
+                user,
+                TokenRequest(agent_id=args.agent, scopes=args.scopes, task=args.task),
+                jkt=dpop_key.thumbprint,
             )
         except AgentWardenError:
             gateway.close()
             raise
-        warden = LocalWarden(gateway, issued.access_token)
+        warden = LocalWarden(gateway, issued.access_token, dpop_key=dpop_key)
     else:
         token = os.environ.get("AGENTWARDEN_TOKEN")
         if not token:
             print("error: set AGENTWARDEN_TOKEN (the agent token) or use --local", file=sys.stderr)
             return 2
-        warden = WardenClient(args.url, token)
+        key = DpopKey.load(args.dpop_key) if args.dpop_key else None
+        warden = WardenClient(args.url, token, dpop_key=key)
     if args.user_prompt:
         warden.set_user_prompt(args.user_prompt)
     try:
@@ -264,6 +356,23 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> int:
     finally:
         if gateway is not None:
             gateway.close()
+
+
+def cmd_dpop(args: argparse.Namespace) -> int:
+    from agentwarden.sdk import DpopKey
+
+    if args.dpop_command == "keygen":
+        key = DpopKey()
+        try:
+            key.save(args.out)
+        except FileExistsError:
+            print(f"error: {args.out} already exists; refusing to overwrite a key", file=sys.stderr)
+            return 1
+        print(f"wrote DPoP key (ES256) to {args.out} (mode 0600)")
+        print(f"jkt: {key.thumbprint}")
+        return 0
+    print(DpopKey.load(args.key).thumbprint)
+    return 0
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -316,11 +425,18 @@ def build_parser() -> argparse.ArgumentParser:
         dest="policy_command", required=True
     )
     p = policy.add_parser("validate", help="validate a policy file")
-    p.add_argument("file", nargs="?", help="policy YAML (default: configured policy)")
+    p.add_argument("file", nargs="?", help="policy .yaml or .cedar (default: configured policy)")
     p.set_defaults(func=cmd_policy_validate)
     p = policy.add_parser("test", help="run policy test suites")
     p.add_argument("suites", nargs="+")
     p.add_argument("--policy", help="policy file (overrides each suite's 'policy' key)")
+    p.add_argument(
+        "--backend",
+        choices=["yaml", "cedar", "opa"],
+        default="yaml",
+        help="cedar: the .cedar file next to the suite's policy; opa: the server at --opa-url",
+    )
+    p.add_argument("--opa-url", help="OPA server for --backend opa (default AGENTWARDEN_OPA_URL)")
     p.set_defaults(func=cmd_policy_test)
 
     audit = sub.add_parser("audit", help="audit log tools").add_subparsers(
@@ -329,12 +445,59 @@ def build_parser() -> argparse.ArgumentParser:
     p = audit.add_parser("verify", help="verify the audit hash chain")
     p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
     p.set_defaults(func=cmd_audit_verify)
+    p = audit.add_parser("export", help="export the audit log to a SIEM (OCSF or native JSON)")
+    p.add_argument(
+        "--sink",
+        default="-",
+        help="'-' for stdout, a file path, or an http(s) URL (token: AGENTWARDEN_EXPORT_TOKEN)",
+    )
+    p.add_argument("--format", choices=["ocsf", "native"], default="ocsf")
+    p.add_argument("--cursor", default="default", help="cursor name (one per destination)")
+    p.add_argument("--batch", type=int, default=500)
+    p.add_argument("--follow", action="store_true", help="keep exporting new entries")
+    p.add_argument("--interval", type=float, default=5.0, help="seconds between polls (--follow)")
+    p.add_argument(
+        "--reset", choices=["start", "head"], help="restart from the beginning or from now"
+    )
+    p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.set_defaults(func=cmd_audit_export)
 
     p = sub.add_parser("analyze", help="least-privilege report from the audit log")
     p.add_argument("--days", type=int, default=30)
     p.add_argument("--format", choices=["markdown", "json"], default="markdown")
     p.add_argument("--db", help="SQLite path (overrides AGENTWARDEN_DB_PATH)")
     p.set_defaults(func=cmd_analyze)
+
+    p = sub.add_parser(
+        "bench", help="benchmark against public prompt-injection datasets (BIPIA, InjecAgent)"
+    )
+    p.add_argument(
+        "--track",
+        action="append",
+        choices=["detection", "agent"],
+        help="repeatable (default: both)",
+    )
+    p.add_argument("--threshold", type=float, default=0.3, help="detector flag threshold")
+    p.add_argument("--limit", type=int, help="use only the first N cases of each dataset file")
+    p.add_argument(
+        "--split",
+        choices=["all", "dev", "test"],
+        default="all",
+        help="dev: for developing detectors; test: held out; all: the reported numbers",
+    )
+    p.add_argument("--cache-dir", help="dataset cache (default ~/.cache/agentwarden/benchmarks)")
+    p.add_argument("--offline", action="store_true", help="use cached datasets only")
+    p.add_argument("--markdown", help="also write the Markdown report here")
+    p.add_argument("--json", help="also write the JSON report here")
+    p.add_argument("--quiet", action="store_true", help="don't print the report")
+    p.add_argument("--min-recall", type=float, help="gate: overall detection recall")
+    p.add_argument("--max-fpr", type=float, help="gate: false-positive rate on benign documents")
+    p.add_argument("--max-asr", type=float, help="gate: agent-track attack success rate")
+    p.add_argument("--min-utility", type=float, help="gate: agent-track utility")
+    p.add_argument(
+        "--max-false-alarms", type=float, help="gate: risk-engine flags on benign user actions"
+    )
+    p.set_defaults(func=cmd_bench)
 
     p = sub.add_parser("eval", help="evaluate injection detection on a labeled corpus")
     p.add_argument("--corpus", default=str(DEFAULT_CORPUS_PATH))
@@ -361,8 +524,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--scopes", nargs="+", help="--local: scopes to request")
     p.add_argument("--task", help="--local: task recorded in the token")
     p.add_argument("--db", help="--local: SQLite path (overrides AGENTWARDEN_DB_PATH)")
+    p.add_argument("--dpop-key", help="PEM key the agent token is DPoP-bound to (remote mode)")
     p.add_argument("command", nargs=argparse.REMAINDER, help="-- upstream server command")
     p.set_defaults(func=cmd_mcp_proxy)
+
+    dpop = sub.add_parser("dpop", help="agent DPoP keys (RFC 9449)").add_subparsers(
+        dest="dpop_command", required=True
+    )
+    p = dpop.add_parser("keygen", help="create an agent DPoP key (ES256)")
+    p.add_argument("--out", default="agent-dpop.pem")
+    p.set_defaults(func=cmd_dpop)
+    p = dpop.add_parser("thumbprint", help="print a key's RFC 7638 thumbprint (jkt)")
+    p.add_argument("key")
+    p.set_defaults(func=cmd_dpop)
 
     p = sub.add_parser("demo", help="run the scripted end-to-end attack demo")
     p.add_argument("--no-color", action="store_true")

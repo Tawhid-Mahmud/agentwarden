@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
   <title>AgentWarden Approvals</title>
   <link rel="stylesheet" href="/console/app.css">
   <script src="/console/app.js" defer></script>
@@ -11,46 +12,85 @@
   <header class="topbar">
     <div class="brand">
       <span class="mark" aria-hidden="true"></span>
-      <span>AgentWarden <strong>Approvals</strong></span>
+      <span class="brand-name">AgentWarden</span>
+      <span class="brand-sep" aria-hidden="true">/</span>
+      <span class="brand-area">Approvals</span>
     </div>
-    <div class="who" id="who" hidden>
-      <span id="who-name"></span>
-      <button type="button" class="link" id="sign-out">Sign out</button>
+    <div class="account" id="account" hidden>
+      <button type="button" class="icon-button" id="help-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)"></button>
+      <span class="avatar" id="avatar" aria-hidden="true"></span>
+      <span class="account-text">
+        <span id="account-name"></span>
+        <span class="account-role" id="account-role"></span>
+      </span>
+      <button type="button" class="text-button" id="sign-out">Sign out</button>
     </div>
   </header>
 
-  <main>
-    <section class="signin" id="signin">
-      <h1>Review what your agents want to do</h1>
-      <p class="muted">High-impact agent actions wait here for a human decision. Sign in as an approver.</p>
-      <form id="signin-form" novalidate>
-        <fieldset class="method">
-          <legend class="label">Sign in with</legend>
-          <label><input type="radio" name="method" value="key" id="method-key" checked> API key</label>
-          <label><input type="radio" name="method" value="token" id="method-token"> ID token (OIDC)</label>
-        </fieldset>
-        <label class="label" for="credential">Credential</label>
-        <input id="credential" type="password" autocomplete="off" spellcheck="false" required>
-        <p class="hint">Kept only in this browser tab and sent only to this AgentWarden server.</p>
-        <button type="submit" class="primary" id="signin-button">Sign in</button>
-        <p class="error" id="signin-error" role="alert" hidden></p>
-      </form>
+  <main id="main">
+    <!-- ================================================================ sign in -->
+    <section class="signin" id="signin" aria-labelledby="signin-title">
+      <div class="signin-card">
+        <span class="signin-mark" aria-hidden="true"></span>
+        <h1 id="signin-title">Review what your agents want to do</h1>
+        <p class="signin-lede">When an AI agent tries something that needs a person to decide, such as emailing someone outside the company or acting on a request it found in a document, it waits here for an approver.</p>
+        <form id="signin-form" novalidate>
+          <div class="segmented" role="radiogroup" aria-label="Sign in with">
+            <input type="radio" name="method" value="key" id="method-key" checked>
+            <label for="method-key">API key</label>
+            <input type="radio" name="method" value="token" id="method-token">
+            <label for="method-token">ID token (OIDC)</label>
+          </div>
+          <label class="field-label" for="credential" id="credential-label">API key</label>
+          <input id="credential" type="password" autocomplete="off" spellcheck="false" required aria-describedby="credential-hint">
+          <p class="hint" id="credential-hint">Kept only in this browser tab and sent only to this AgentWarden server.</p>
+          <p class="error" id="signin-error" role="alert" hidden></p>
+          <button type="submit" class="button primary block" id="signin-button">Sign in</button>
+        </form>
+      </div>
     </section>
 
+    <!-- ============================================================== workspace -->
     <section class="workspace" id="workspace" hidden>
-      <div class="tabs" role="tablist">
-        <button type="button" role="tab" id="tab-pending" aria-selected="true">Pending <span class="count" id="pending-count">0</span></button>
-        <button type="button" role="tab" id="tab-history" aria-selected="false">History</button>
-        <span class="refresh muted" id="refreshed"></span>
-      </div>
-      <p class="notice" id="not-approver" hidden>You're signed in, but your account doesn't have the approver role, so you can't review requests.</p>
-      <div id="list" class="list" aria-live="polite"></div>
-      <div class="empty" id="empty" hidden>
-        <h2>Nothing is waiting for you</h2>
-        <p class="muted">When an agent asks to do something that needs a human, it shows up here within a few seconds.</p>
-      </div>
+      <aside class="queue" aria-label="Requests">
+        <div class="queue-head">
+          <div class="tabs" role="tablist" aria-label="Requests">
+            <button type="button" role="tab" id="tab-pending" aria-selected="true">Waiting <span class="count" id="pending-count">0</span></button>
+            <button type="button" role="tab" id="tab-history" aria-selected="false">Decided</button>
+          </div>
+          <span class="sync" id="sync" aria-live="polite"></span>
+        </div>
+        <p class="notice" id="not-approver" hidden>You're signed in, but your account doesn't have the approver role, so you can't review requests.</p>
+        <ul class="queue-list" id="queue" role="listbox" aria-label="Requests"></ul>
+        <div class="queue-empty" id="queue-empty" hidden>
+          <span class="empty-icon" id="empty-icon" aria-hidden="true"></span>
+          <h2 id="empty-title">All clear</h2>
+          <p id="empty-text">Nothing is waiting for a decision. New requests appear here within a few seconds.</p>
+        </div>
+      </aside>
+
+      <section class="detail" id="detail" aria-live="polite" aria-label="Selected request">
+        <div class="detail-empty" id="detail-empty">
+          <p>Select a request to review it.</p>
+          <p class="hint">Use <kbd>J</kbd> and <kbd>K</kbd> to move between requests.</p>
+        </div>
+        <div id="detail-body" hidden></div>
+      </section>
     </section>
   </main>
+
+  <dialog class="help" id="help" aria-labelledby="help-title">
+    <h2 id="help-title">Keyboard shortcuts</h2>
+    <dl>
+      <dt><kbd>J</kbd> <kbd>K</kbd></dt><dd>Next / previous request</dd>
+      <dt><kbd>A</kbd></dt><dd>Approve (press twice for high-risk requests)</dd>
+      <dt><kbd>D</kbd></dt><dd>Deny</dd>
+      <dt><kbd>N</kbd></dt><dd>Write a note</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Cancel a confirmation, or go back on a phone</dd>
+      <dt><kbd>?</kbd></dt><dd>Show this list</dd>
+    </dl>
+    <div class="help-actions"><button class="button" type="button" id="help-close">Close</button></div>
+  </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </body>

@@ -5,6 +5,108 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+Agent tokens can be bound to the agent's key, decisions reach your SIEM and tracing, prompt-injection
+defenses are measured on public datasets, a new detector catches politely worded injections, and
+policy can be written in Cedar or Rego.
+
+### Added
+- **Prompt-injection benchmark** (`agentwarden bench`, `docs/BENCHMARK.md`): 2,108 InjecAgent
+  scenarios through the full gateway (attack success rate, rate without the critical-tier gate,
+  utility, per attack type) and the injection detector on BIPIA documents and attacks (recall per
+  category, false positives on real emails, tables and code). Datasets are fetched from pinned
+  commits, verified by SHA-256 and cached, never redistributed. A CI job runs it with regression
+  gates and publishes the report.
+- **Action-provenance detector** (`provenance`): flags side-effecting calls that do what untrusted
+  content *asked for* rather than what the user asked for (`content_requested_action`), and
+  requests written in the user's voice inside data (`request_in_user_voice`). This catches
+  politely worded injections that contain no "ignore previous instructions". The default policy
+  holds such calls for approval. On the held-out InjecAgent split: attack success 8.6% → 1.7%,
+  and 24.1% → 8.6% without critical-tier approval; benign-action false alarms 1.7% → 1.9%.
+- **Cedar and OPA policy backends** (`AGENTWARDEN_POLICY_BACKEND=yaml|cedar|opa`,
+  `docs/POLICY_BACKENDS.md`). Cedar runs in-process (`pip install 'agentwarden[cedar]'`); each call
+  is asked as `call` and `call_unattended`, so `forbid` on the latter means approval. OPA is asked
+  through its Data API (`AGENTWARDEN_OPA_URL`, `_PATH`, `_TOKEN`, `_TIMEOUT`). Both fail closed:
+  an unreachable, slow or undefined OPA decision, or a Cedar policy that errors during evaluation
+  (which Cedar would skip), means deny. The default policy is ported to `data/policy.cedar` and
+  `data/policy.rego` with the same rule IDs; `agentwarden policy test --backend cedar|opa` runs the
+  same suite against them, and CI does so against a real OPA server.
+- **Real-agent demo** (`examples/hijack_demo.py`, `docs/REAL_AGENT_DEMO.md`): a Claude agent
+  (Messages API, manual tool loop, server-side refusal fallback) handles an inbox containing a
+  business-email-compromise request, with and without AgentWarden in front of its tools. A
+  scripted version runs in CI without an API key.
+- **New taint signal `tainted_destination_with_data`** and default rule
+  `deny-data-to-tainted-destination`: data the agent read from one source (a file) going to a
+  destination that only other content chose (an address in an email) is denied. That is the shape
+  of exfiltration, and unlike "reply to the sender" it isn't ambiguous.
+- Benchmark: a benign-action false-alarm set (`--max-false-alarms`), and dev/test splits
+  (`--split`): detectors are developed on BIPIA's training files and half of InjecAgent, and the
+  held-out half is reported.
+- **DPoP sender-constrained tokens** (RFC 9449): send a `DPoP` proof when requesting a token
+  (`POST /v1/tokens` or `/v1/token/exchange`) and it is bound to the agent's key (`cnf.jkt`,
+  `token_type: DPoP`). Bound tokens must be presented as `Authorization: DPoP` with a fresh proof
+  for each request; `Bearer` downgrades, foreign keys, mismatched method/URL/token and replays (tracked
+  in the database across instances) are rejected with `WWW-Authenticate: DPoP`. Delegated tokens
+  are bound with `dpop_jkt`, which is required when the parent is bound. New settings:
+  `AGENTWARDEN_DPOP_REQUIRED`, `AGENTWARDEN_DPOP_MAX_AGE`, `AGENTWARDEN_PUBLIC_URL`.
+- `agentwarden dpop keygen` / `dpop thumbprint`, `agentwarden.sdk.DpopKey`, `dpop_key=` on
+  `WardenClient` and `LocalWarden`, and `--dpop-key` on `mcp-proxy` (local mode binds automatically).
+- **SIEM export** (`agentwarden audit export`): the audit log as OCSF 1.3 events (or native JSON) to
+  stdout, a file, or an HTTPS collector, with a per-destination cursor in the database,
+  at-least-once delivery, `--follow`, and `--reset`. Each batch is checked against the hash of the
+  last exported entry, so rewriting exported history (including truncating and re-appending a
+  forged tail) stops the export with `TAMPERED`. `GET /v1/audit/export` offers the same as a
+  pull API with a `409` on a broken chain. See `docs/SIEM.md`.
+- **OpenTelemetry** (`pip install 'agentwarden[otel]'`, `AGENTWARDEN_OTEL=true`): spans for
+  authorization (with risk and policy child spans) and token issuance, exchange and delegation;
+  `agentwarden.decisions`, `agentwarden.authorize.duration` and `agentwarden.tokens` metrics. No user
+  IDs, arguments or prompts in telemetry; audit entries record their `trace_id`. The Docker image
+  includes the OTLP exporter.
+
+### Changed
+- **`deny-critical-risk` no longer denies on "where it came from" evidence alone.** When a high
+  score is made only of taint and provenance signals (no injection, secrets, LLM-judge verdict or
+  data going to a tainted destination), a human decides instead. Replying to the sender of an
+  email is legitimate as often as not. The demo showed an agent's reply confirming a vendor's
+  invoice being denied outright. Ported to Cedar and Rego; 28 policy cases pass on all three.
+- **Action provenance requires the call to be about what the content asked.** A request in content
+  only counts against a call whose arguments share its names, addresses or files (calls without
+  arguments are still checked). An email asking to send the payroll export no longer flags an
+  unrelated reply to a colleague. Benign false alarms fell from 3.2% to 1.9% (15.6% → 1.9% for
+  paraphrased requests after request-heavy email), with attack success unchanged.
+- **Approver console redesigned** as an inbox. A queue of waiting requests, most urgent first,
+  sits next to the selected request. Each request reads in decision order:
+  - a plain-language verdict ("The request came from the content, not the user"), quoting the
+    request the content made in its original wording
+  - what the user asked, side by side with what the agent wants to do, with values that came from
+    content rather than the user highlighted inline
+  - risk evidence in plain words
+  - the policy rules involved
+  - raw arguments and IDs, collapsed behind a disclosure
+
+  A decision bar stays pinned at the bottom. High-risk approvals need a second press, there are
+  keyboard shortcuts (J/K, A, D, N, ?), a countdown to expiry, and a "Decided" view with each
+  outcome. On a phone it becomes a list and a detail screen, and it works in light and dark mode.
+  The visual design is modern: the bundled Geist typeface (SIL OFL, served by AgentWarden from an
+  allowlist), zinc neutrals with a true-black dark mode, a frosted top bar, a floating decision bar,
+  segmented risk meters, and short entrance animations that respect reduced motion. It still runs
+  under a strict CSP with no inline script or style; the only policy change is `font-src 'self'`.
+  A test fails if a new risk signal has no plain-language label.
+- **New default policy rule `approve-after-injection`**: once injection is detected in what the
+  agent read (or in its arguments), any call with side effects needs approval, whatever the tool's
+  risk tier. The benchmark showed explicit "ignore previous instructions" attacks reaching low- and
+  medium-risk write tools with a risk score just under the 0.5 approval threshold. Explicit-override
+  attack success fell from 3.2% to 0%, with no utility loss.
+
+### Quality
+- 459 tests (94% coverage) on SQLite and PostgreSQL; the policy suite (26 cases) passes on the YAML,
+  Cedar and OPA backends, the last against a real OPA server in CI.
+- CI gates on the public benchmark: attack success ≤ 3%, benign-action false alarms ≤ 5%, utility
+  ≥ 99%, detector recall ≥ 55% and false positives ≤ 2% on real documents.
+- Secret-scanner false positives removed: the CI Postgres service uses trust auth, and test
+  credentials are built at runtime.
+
 ## [0.2.0] - 2026-11-01
 
 ### Added

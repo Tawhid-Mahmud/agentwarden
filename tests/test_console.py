@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import agentwarden.risk as risk_package
 from agentwarden.api import create_app
 from agentwarden.config import Settings
 from agentwarden.gateway import Gateway
@@ -136,3 +137,50 @@ def test_old_databases_gain_the_details_column(tmp_path: Path) -> None:
     assert ApprovalQueue(db).get("apr_old").details == {}
     Database(str(path)).close()  # running the migration again is harmless
     db.close()
+
+
+def test_every_risk_signal_has_a_plain_language_label() -> None:
+    """Reviewers see signals in plain words; a new detector signal needs a label in app.js."""
+    source = "\n".join(
+        p.read_text(encoding="utf-8") for p in Path(risk_package.__file__).parent.glob("*.py")
+    )
+    names = set(re.findall(r'name="([a-z_]+)"', source))
+    names |= set(re.findall(r'emit\(\s*"([a-z_]+)"', source))
+    names |= set(re.findall(r'_p\(\s*"([a-z_]+)"', source))
+    names |= set(re.findall(r'^\s+"([a-z_]+)",\n\s+0\.\d', source, re.M))  # _p("x",\n 0.6 ...)
+    names -= {"injection", "provenance", "taint", "secrets", "exfiltration", "anomaly", "llm_judge"}
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    labels = set(re.findall(r"^\s+([a-z_]+): \"", script, re.M))
+    assert len(names) >= 25, names
+    assert names <= labels, f"signals without a console label: {sorted(names - labels)}"
+
+
+def test_console_markup_supports_the_review_flow() -> None:
+    page = (CONSOLE / "index.html").read_text(encoding="utf-8")
+    for element_id in (
+        "queue",
+        "detail",
+        "tab-pending",
+        "tab-history",
+        "help",
+        "help-close",
+        "signin-form",
+    ):
+        assert f'id="{element_id}"' in page, element_id
+    assert "<form method=" not in page  # the CSP has form-action 'none'
+    script = (CONSOLE / "app.js").read_text(encoding="utf-8")
+    assert 'case "a":' in script and 'case "d":' in script  # keyboard approve/deny
+    assert "Confirm approval" in script  # high-risk approvals take a second press
+
+
+def test_bundled_fonts_are_served_from_an_allowlist(client: TestClient) -> None:
+    for name in ("Geist-Variable.woff2", "GeistMono-Variable.woff2"):
+        response = client.get(f"/console/fonts/{name}")
+        assert response.status_code == 200 and response.headers["content-type"] == "font/woff2"
+        assert response.content[:4] == b"wOF2"
+        assert "max-age" in response.headers["cache-control"]
+    for name in ("OFL-Geist.txt", "..%2Fapp.js", "app.js", "missing.woff2"):
+        assert client.get(f"/console/fonts/{name}").status_code == 404
+    csp = client.get("/console").headers["content-security-policy"]
+    assert "font-src 'self'" in csp and "font-src *" not in csp
+    assert (CONSOLE / "fonts" / "OFL-Geist.txt").is_file()  # the font license ships with the fonts

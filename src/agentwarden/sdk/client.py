@@ -39,7 +39,9 @@ from typing import Any, ParamSpec, TypeVar
 import httpx
 
 from agentwarden.errors import AgentWardenError, AuthenticationError, RateLimitedError
+from agentwarden.identity.dpop import DpopPresentation
 from agentwarden.models import AuthorizationResult, AuthorizeRequest, ContextSegment, Decision
+from agentwarden.sdk.dpop import DpopKey
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -181,17 +183,22 @@ class WardenClient(_WardenBase):
         *,
         http_client: httpx.Client | None = None,
         timeout: float = 10.0,
+        dpop_key: DpopKey | None = None,
     ) -> None:
         super().__init__()
         self._token = token
+        self._base_url = base_url.rstrip("/")
+        self._dpop_key = dpop_key
         self._http = http_client or httpx.Client(base_url=base_url, timeout=timeout)
         self._owns_http = http_client is None
 
     def _send(self, request: AuthorizeRequest) -> AuthorizationResult:
+        if self._dpop_key is not None:  # a fresh proof for every call (RFC 9449)
+            headers = self._dpop_key.headers("POST", self._base_url + "/v1/authorize", self._token)
+        else:
+            headers = {"Authorization": f"Bearer {self._token}"}
         response = self._http.post(
-            "/v1/authorize",
-            json=request.model_dump(mode="json"),
-            headers={"Authorization": f"Bearer {self._token}"},
+            "/v1/authorize", json=request.model_dump(mode="json"), headers=headers
         )
         if response.status_code == 401:
             raise AuthenticationError(response.json().get("detail", "authentication failed"))
@@ -215,11 +222,16 @@ class WardenClient(_WardenBase):
 class LocalWarden(_WardenBase):
     """In-process client backed by a :class:`~agentwarden.gateway.Gateway`."""
 
-    def __init__(self, gateway: Any, token: str) -> None:
+    def __init__(self, gateway: Any, token: str, dpop_key: DpopKey | None = None) -> None:
         super().__init__()
         self._gateway = gateway
         self._token = token
+        self._dpop_key = dpop_key
 
     def _send(self, request: AuthorizeRequest) -> AuthorizationResult:
-        result: AuthorizationResult = self._gateway.authorize(self._token, request)
+        dpop = None
+        if self._dpop_key is not None:
+            url = self._gateway.endpoint_url("/v1/authorize")
+            dpop = DpopPresentation(self._dpop_key.proof("POST", url, self._token), "POST", url)
+        result: AuthorizationResult = self._gateway.authorize(self._token, request, dpop=dpop)
         return result

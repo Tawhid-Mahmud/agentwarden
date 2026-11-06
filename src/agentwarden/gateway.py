@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import time
 from collections.abc import Callable, Sequence
@@ -40,6 +41,7 @@ from agentwarden.identity import (
     TokenClaims,
     TokenService,
 )
+from agentwarden.identity.dpop import DpopError, DpopPresentation, DpopVerifier
 from agentwarden.identity.keys import SigningKeys
 from agentwarden.identity.oidc import IdentityClaims, OidcVerifier
 from agentwarden.identity.scopes import covered_by_any
@@ -56,12 +58,14 @@ from agentwarden.models import (
     Tool,
     User,
 )
-from agentwarden.policy import PolicyEngine
+from agentwarden.policy import PolicyBackend, load_backend
 from agentwarden.ratelimit import RateLimiter
 from agentwarden.receipts import issue_receipt
 from agentwarden.risk import DetectionContext, Detector, RiskEngine, compute_facts, flatten_strings
 from agentwarden.risk.text import CallFacts
 from agentwarden.storage import Database
+from agentwarden.telemetry import Telemetry
+from agentwarden.telemetry import now as perf_now
 
 _NO_RISK = RiskAssessment(score=0.0, level=RiskLevel.LOW, signals=[])
 
@@ -90,14 +94,16 @@ class Gateway:
         revocations: RevocationList,
         keys: SigningKeys,
         tokens: TokenService,
-        policy: PolicyEngine,
+        policy: PolicyBackend,
         risk: RiskEngine,
         approvals: ApprovalQueue,
         audit: AuditLog,
         clock: Callable[[], float] = time.time,
         oidc: OidcVerifier | None = None,
+        telemetry: Telemetry | None = None,
     ) -> None:
         self.settings = settings
+        self.telemetry = telemetry or Telemetry()
         self.db = db
         self.directory = directory
         self.registry = registry
@@ -111,6 +117,9 @@ class Gateway:
         self.oidc = oidc
         self._clock = clock
         self.agent_limiter = RateLimiter(settings.rate_limit_per_agent, clock=clock)
+        self.dpop = DpopVerifier(
+            db, clock=clock, max_age=settings.dpop_max_age, skew=settings.clock_skew_seconds
+        )
 
     @classmethod
     def build(
@@ -120,6 +129,7 @@ class Gateway:
         clock: Callable[[], float] = time.time,
         extra_detectors: Sequence[Detector] = (),
         oidc: OidcVerifier | None = None,
+        telemetry: Telemetry | None = None,
     ) -> Gateway:
         """Wire up a gateway from settings (defaults: environment variables)."""
         settings = settings or Settings.from_env()
@@ -149,12 +159,20 @@ class Gateway:
             revocations=revocations,
             keys=keys,
             tokens=TokenService(keys, settings, revocations, clock=clock),
-            policy=PolicyEngine.from_file(settings.policy_path),
+            policy=load_backend(
+                settings.policy_backend,
+                policy_path=settings.effective_policy_path,
+                opa_url=settings.opa_url,
+                opa_path=settings.opa_path,
+                opa_token=settings.opa_token,
+                opa_timeout=settings.opa_timeout,
+            ),
             risk=RiskEngine.default(activity=audit, clock=clock, extra=detectors),
             approvals=ApprovalQueue(db, ttl=settings.approval_ttl, clock=clock),
             audit=audit,
             clock=clock,
             oidc=oidc or cls._oidc_from(settings, clock),
+            telemetry=telemetry,
         )
 
     @staticmethod
@@ -170,6 +188,7 @@ class Gateway:
         )
 
     def close(self) -> None:
+        self.policy.close()
         self.db.close()
 
     def __enter__(self) -> Gateway:
@@ -179,15 +198,42 @@ class Gateway:
         self.close()
 
     # =================================================================== tokens
-    def issue_token(self, user: User, request: TokenRequest) -> IssuedToken:
+    def endpoint_url(self, path: str) -> str:
+        """The URL clients use for ``path`` (what DPoP proofs must name)."""
+        return (self.settings.public_url or "http://agentwarden.local") + path
+
+    def dpop_thumbprint(self, presentation: DpopPresentation | None) -> str | None:
+        """Validate a DPoP proof sent while *requesting* a token; return the key to bind to."""
+        if presentation is None or not presentation.proof:
+            return None
+        return self.dpop.verify(
+            presentation.proof, method=presentation.method, url=presentation.url
+        )
+
+    def issue_token(self, user: User, request: TokenRequest, jkt: str | None = None) -> IssuedToken:
+        attributes = {"agentwarden.agent_id": request.agent_id, "agentwarden.dpop": bool(jkt)}
+        with self.telemetry.span("agentwarden.token.issue", attributes) as span:
+            try:
+                issued = self._issue_token(user, request, jkt)
+            except AgentWardenError:
+                self.telemetry.record_token("issue", "denied", request.agent_id)
+                raise
+            span.set_attribute("agentwarden.scopes", list(issued.scope))
+        self.telemetry.record_token("issue", "issued", request.agent_id)
+        return issued
+
+    def _issue_token(self, user: User, request: TokenRequest, jkt: str | None) -> IssuedToken:
         agent = self.registry.require(request.agent_id)
         try:
+            if self.settings.dpop_required and not jkt:
+                raise InvalidRequestError("DPoP is required: send a DPoP proof with this request")
             issued = self.tokens.issue(
                 user=user,
                 agent=agent,
                 scopes=request.scopes,
                 task=request.task,
                 ttl=request.ttl_seconds,
+                jkt=jkt,
             )
         except AgentWardenError as exc:
             self.audit.append(
@@ -241,8 +287,15 @@ class Gateway:
             raise AuthenticationError("signed in, but this identity has no AgentWarden user")
         return user, identity
 
-    def exchange_token(self, id_token: str, request: TokenRequest) -> IssuedToken:
+    def exchange_token(
+        self, id_token: str, request: TokenRequest, jkt: str | None = None
+    ) -> IssuedToken:
         """RFC 8693 token exchange: an IdP ID token becomes a scoped agent token."""
+        attributes = {"agentwarden.agent_id": request.agent_id, "agentwarden.dpop": bool(jkt)}
+        with self.telemetry.span("agentwarden.token.exchange", attributes):
+            return self._exchange_token(id_token, request, jkt)
+
+    def _exchange_token(self, id_token: str, request: TokenRequest, jkt: str | None) -> IssuedToken:
         user, identity = self._identify(id_token)
         token_hash = hashlib.sha256(id_token.encode("utf-8")).hexdigest()
         if self.settings.oidc_one_time_tokens:
@@ -262,7 +315,7 @@ class Gateway:
                 )
                 raise AuthenticationError("this ID token has already been exchanged; sign in again")
         try:
-            issued = self.issue_token(user, request)
+            issued = self.issue_token(user, request, jkt=jkt)
         except AgentWardenError:
             if self.settings.oidc_one_time_tokens:  # a failed exchange doesn't burn the sign-in
                 self.db.execute("DELETE FROM used_id_tokens WHERE token_hash = ?", (token_hash,))
@@ -275,15 +328,40 @@ class Gateway:
         )
         return issued
 
-    def delegate_token(self, parent_token: str, request: DelegationRequest) -> IssuedToken:
-        parent = self._verify(parent_token, context="token.delegate")
+    def delegate_token(
+        self,
+        parent_token: str,
+        request: DelegationRequest,
+        dpop: DpopPresentation | None = None,
+    ) -> IssuedToken:
+        attributes = {"agentwarden.sub_agent_id": request.sub_agent_id}
+        with self.telemetry.span("agentwarden.token.delegate", attributes) as span:
+            try:
+                issued = self._delegate_token(parent_token, request, dpop)
+            except AgentWardenError:
+                self.telemetry.record_token("delegate", "denied", request.sub_agent_id)
+                raise
+            span.set_attribute("agentwarden.delegation_depth", len(issued.actor_chain) - 1)
+        self.telemetry.record_token("delegate", "issued", request.sub_agent_id)
+        return issued
+
+    def _delegate_token(
+        self, parent_token: str, request: DelegationRequest, dpop: DpopPresentation | None
+    ) -> IssuedToken:
+        parent = self._verify(parent_token, context="token.delegate", dpop=dpop)
         disabled = self._disabled_agent(parent)
         if disabled:
             raise AuthenticationError(f"agent {disabled!r} in the delegation chain is disabled")
         sub_agent = self.registry.require(request.sub_agent_id)
         try:
+            if self.settings.dpop_required and not request.dpop_jkt:
+                raise InvalidRequestError("DPoP is required: give the sub-agent's dpop_jkt")
             issued = self.tokens.delegate(
-                parent=parent, sub_agent=sub_agent, scopes=request.scopes, ttl=request.ttl_seconds
+                parent=parent,
+                sub_agent=sub_agent,
+                scopes=request.scopes,
+                ttl=request.ttl_seconds,
+                jkt=request.dpop_jkt,
             )
         except AgentWardenError as exc:
             self.audit.append(
@@ -308,8 +386,10 @@ class Gateway:
         )
         return issued
 
-    def revoke_token(self, token: str, reason: str = "revoked by holder") -> TokenClaims:
-        claims = self._verify(token, context="token.revoke")
+    def revoke_token(
+        self, token: str, reason: str = "revoked by holder", dpop: DpopPresentation | None = None
+    ) -> TokenClaims:
+        claims = self._verify(token, context="token.revoke", dpop=dpop)
         self.tokens.revoke(claims, reason)
         self.audit.append(
             "token.revoked",
@@ -447,8 +527,35 @@ class Gateway:
         ).analyze(window_days)
 
     # ============================================================ authorization
-    def authorize(self, token: str, request: AuthorizeRequest) -> AuthorizationResult:
-        claims = self._verify(token, context="authorize", tool=request.tool)
+    def authorize(
+        self, token: str, request: AuthorizeRequest, dpop: DpopPresentation | None = None
+    ) -> AuthorizationResult:
+        started = perf_now()
+        with self.telemetry.span(
+            "agentwarden.authorize", {"agentwarden.tool": request.tool}
+        ) as span:
+            result = self._authorize(token, request, dpop, span.trace_id)
+            span.set_attribute("agentwarden.agent_id", result.agent_id)
+            span.set_attribute("agentwarden.decision", result.decision.value)
+            span.set_attribute("agentwarden.decision_id", result.decision_id)
+            span.set_attribute("agentwarden.risk.score", result.risk.score)
+            span.set_attribute("agentwarden.risk.level", result.risk.level.value)
+            span.set_attribute("agentwarden.risk.signals", result.risk.signal_names)
+            span.set_attribute("agentwarden.policy.rules", result.matched_rules)
+            span.set_attribute("agentwarden.approval_pending", result.approval_id is not None)
+        self.telemetry.record_decision(
+            result.decision.value, request.tool, result.agent_id or "", perf_now() - started
+        )
+        return result
+
+    def _authorize(
+        self,
+        token: str,
+        request: AuthorizeRequest,
+        dpop: DpopPresentation | None,
+        trace_id: str | None,
+    ) -> AuthorizationResult:
+        claims = self._verify(token, context="authorize", tool=request.tool, dpop=dpop)
         retry_after = self.agent_limiter.hit(claims.agent_id)
         if retry_after is not None:
             raise RateLimitedError(f"agent {claims.agent_id!r} is over its rate limit", retry_after)
@@ -504,6 +611,7 @@ class Gateway:
                 "args_sha256": hashlib.sha256(canonical_json(request.args).encode()).hexdigest(),
                 "facts": facts.as_dict() if facts else None,
                 "context_sources": [s.source for s in request.context],
+                "trace_id": trace_id,
             },
         )
         return result
@@ -537,22 +645,24 @@ class Gateway:
 
         segments = tuple(request.context)
         facts = compute_facts(request.args, segments, self.directory.is_trusted_domain)
-        risk = self.risk.assess(
-            DetectionContext(
-                tool=tool,
-                args=request.args,
-                strings=tuple(flatten_strings(request.args)),
-                facts=facts,
-                user_prompt=request.user_prompt or "",
-                segments=segments,
-                agent_id=agent.id,
-                user_id=user.id,
-                is_trusted_domain=self.directory.is_trusted_domain,
+        with self.telemetry.span("agentwarden.risk"):
+            risk = self.risk.assess(
+                DetectionContext(
+                    tool=tool,
+                    args=request.args,
+                    strings=tuple(flatten_strings(request.args)),
+                    facts=facts,
+                    user_prompt=request.user_prompt or "",
+                    segments=segments,
+                    agent_id=agent.id,
+                    user_id=user.id,
+                    is_trusted_domain=self.directory.is_trusted_domain,
+                )
             )
-        )
-        policy = self.policy.evaluate(
-            self._policy_context(claims, user, agent, tool, request, facts, risk)
-        )
+        with self.telemetry.span("agentwarden.policy"):
+            policy = self.policy.evaluate(
+                self._policy_context(claims, user, agent, tool, request, facts, risk)
+            )
         outcome = _Outcome(policy.decision, list(policy.reasons), policy.matched_rules, risk)
         if outcome.decision is Decision.REQUIRE_APPROVAL:
             self._resolve_approval(outcome, claims, tool, request, decision_id)
@@ -640,14 +750,44 @@ class Gateway:
         )
 
     # ================================================================== helpers
-    def _verify(self, token: str, *, context: str, tool: str | None = None) -> TokenClaims:
+    def _verify(
+        self,
+        token: str,
+        *,
+        context: str,
+        tool: str | None = None,
+        dpop: DpopPresentation | None = None,
+    ) -> TokenClaims:
         try:
-            return self.tokens.verify(token)
+            claims = self.tokens.verify(token)
+            self._check_binding(token, claims, dpop)
+            return claims
         except AuthenticationError as exc:
             self.audit.append(
                 "auth.failed", tool=tool, data={"reason": str(exc), "operation": context}
             )
             raise
+
+    def _check_binding(
+        self, token: str, claims: TokenClaims, dpop: DpopPresentation | None
+    ) -> None:
+        """Enforce DPoP: bound tokens need a valid proof from the bound key, every time."""
+        uses_dpop_scheme = dpop is not None and dpop.scheme.lower() == "dpop"
+        if claims.jkt is None:
+            if self.settings.dpop_required:
+                raise DpopError("DPoP is required, and this token isn't bound to a key")
+            if uses_dpop_scheme:
+                raise DpopError("the DPoP scheme was used with a token that isn't DPoP-bound")
+            return
+        if dpop is None or not dpop.proof:
+            raise DpopError("this token is DPoP-bound: send it with a DPoP proof")
+        if not uses_dpop_scheme:
+            raise DpopError("DPoP-bound tokens must use 'Authorization: DPoP', not Bearer")
+        jkt = self.dpop.verify(dpop.proof, method=dpop.method, url=dpop.url, access_token=token)
+        if not hmac.compare_digest(jkt, claims.jkt):
+            raise DpopError(
+                "the DPoP proof was signed by a different key than the token is bound to"
+            )
 
     def _disabled_agent(self, claims: TokenClaims) -> str | None:
         for agent_id in claims.actor_chain:

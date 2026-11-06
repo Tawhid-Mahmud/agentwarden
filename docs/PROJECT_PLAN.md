@@ -7,7 +7,7 @@
 
 | | |
 |---|---|
-| **Status** | v0.2.0 released (MCP proxy, OIDC sign-in, key rotation, Postgres, approver console, rate limiting, receipts) |
+| **Status** | v0.3.0 released (DPoP tokens, SIEM/OTel, public benchmark, action-provenance detector, Cedar/OPA backends); v0.2.0 added the MCP proxy, OIDC sign-in, key rotation, Postgres and the approver console |
 | **Owner** | Mohammad Tawhid Mahmud |
 | **Language / stack** | Python 3.11+, FastAPI, Pydantic v2, PyJWT (EdDSA/Ed25519), SQLite or PostgreSQL |
 | **License** | MIT |
@@ -50,7 +50,7 @@ authorized* and *verifiably audited*.
 
 ### Non-goals (v0.x)
 
-- Being a general-purpose IdP. AgentWarden integrates with one (OIDC token exchange is planned for v0.2).
+- Being a general-purpose IdP. AgentWarden integrates with one (OIDC token exchange, built in v0.2).
 - Guaranteeing prompt-injection detection. Heuristics and LLM judges can be evaded. The design
   relies on **deterministic IAM controls** (scopes, policy, approvals) as the primary defense and
   uses risk scoring as an additional signal.
@@ -117,7 +117,7 @@ authorized* and *verifiably audited*.
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for component diagrams and sequence flows, and
-[THREAT_MODEL.md](THREAT_MODEL.md) for the STRIDE and OWASP mapping. (*OIDC is planned for v0.2.)
+[THREAT_MODEL.md](THREAT_MODEL.md) for the STRIDE and OWASP mapping. (*OIDC sign-in was added in v0.2.)
 
 ## 7. Delivery phases (v0.1 MVP)
 
@@ -162,11 +162,11 @@ gantt
 | v0.2 ✅ | **OIDC token exchange**: accept an IdP-issued ID token as `subject_token` | Replaces demo API keys with real user identity. **Built:** `POST /v1/token/exchange` (RFC 8693) |
 | v0.2 ✅ | **Key rotation**: key ring, `kid` selection, multi-key JWKS, grace periods | Limits blast radius of key compromise. **Built:** `agentwarden keys rotate/list/prune` and admin API |
 | v0.2 ✅ | **Postgres backend** | Multi-instance deployments. **Built:** `AGENTWARDEN_DATABASE_URL`, shared state across instances, CI on Postgres 16 |
-| v0.3 | **Cedar / OPA backends** | Lets organizations reuse existing policy investments |
-| v0.3 | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key |
-| v0.3 | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry |
+| v0.3 ✅ | **Cedar / OPA backends** | Lets organizations reuse existing policy investments. **Built:** `AGENTWARDEN_POLICY_BACKEND=cedar\|opa`, default policy ported to both, one test suite for all three ([POLICY_BACKENDS.md](POLICY_BACKENDS.md)) |
+| v0.3 ✅ | **DPoP-bound tokens** | Stolen agent tokens become useless without the agent's private key. **Built:** RFC 9449 binding on issue, exchange and delegation; `agentwarden dpop keygen`; SDK and MCP proxy support |
+| v0.3 ✅ | **OCSF/SIEM export, OTel traces** | SOC visibility, correlation with other telemetry. **Built:** `agentwarden audit export` (file/HTTPS, chain-checked cursor), `GET /v1/audit/export`, OTel spans and metrics ([SIEM.md](SIEM.md)) |
 | v0.3 ✅ | **Approver console** | Better HITL ergonomics; reduces approval fatigue. **Built:** `/console` with full review evidence |
-| v1.0 | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers |
+| v1.0 ✅ | **Benchmark harness** against public agent prompt-injection suites | Credible, comparable detection numbers. **Built:** `agentwarden bench` on InjecAgent and BIPIA, CI gates ([BENCHMARK.md](BENCHMARK.md)) |
 | v1.0 | **SPIFFE workload identity** | Cryptographic agent identity without shared secrets |
 
 ## 9. Success metrics
@@ -177,10 +177,14 @@ gantt
 | Authorization latency (in-process, heuristics only) | p95 < 5 ms | ✅ **0.95 ms** clean call · **3.6 ms** with 2.5 KB of context | 500-call micro-benchmark incl. token verification and audit write |
 | Injection corpus recall / FPR | ≥ 90% / ≤ 10% | ✅ **95.2% / 8.7%** (precision 90.9%) | `agentwarden eval` on the bundled corpus, CI gate |
 | Static analysis | 0 high-severity findings | ✅ 0 findings | `bandit`, `ruff` security rules, Trojan Source scan |
-| Policy regressions | 0 failing policy cases | ✅ 23/23 | `agentwarden policy test` in CI |
+| Policy regressions | 0 failing policy cases | ✅ 28/28 | `agentwarden policy test` in CI |
+
+| Public benchmark (InjecAgent, full gateway) | attack success ≤ 3%, utility ≥ 99% | ✅ **0.8%** all · **1.7%** held-out (0% data stealing) / **100%** | `agentwarden bench`, CI gate |
+| Benign user actions after reading documents | false alarms ≤ 5% | ✅ **1.9%** | `agentwarden bench`, CI gate |
+| Public benchmark (BIPIA documents) | false positives ≤ 2% | ✅ **0.5%** (detector recall 59.0% overall) | `agentwarden bench`, CI gate |
 
 > The bundled corpus is small and hand-written. It works as a **regression suite**, not as a
-> benchmark. Comparing against public datasets is a v1.0 roadmap item.
+> benchmark. [BENCHMARK.md](BENCHMARK.md) has the public-dataset method, results and limitations.
 
 ## 10. Testing & evaluation strategy
 
@@ -198,7 +202,7 @@ gantt
 |---|---|---|
 | Detector evasion (novel injection phrasing) | Injected call scores low | Deterministic controls stay primary (scope ceiling, recipient/domain policy, approvals); taint-flow is phrasing-independent; optional LLM judge |
 | False positives annoy users | Users bypass the tool | Default policy uses `require_approval` for medium risk and reserves `deny` for high-confidence cases; evidence explains each decision |
-| Signing key compromise | Forged tokens | Short TTLs, `kid`, key files outside the repo, zero-downtime rotation and pruning (built), DPoP (v0.3) |
+| Signing key compromise | Forged tokens | Short TTLs, `kid`, key files outside the repo, zero-downtime rotation and pruning (built); DPoP (built) limits theft of individual tokens |
 | Approval fatigue | Rubber-stamping | Risk evidence in queue, only high-impact actions gated, analyzer reports approval volume |
 | SQLite limits | Single-node only | Resolved: PostgreSQL backend for several instances (v0.2) |
 | LLM judge leaks sensitive context to a third party | Data exposure | Off by default, explicit opt-in, documented data flow, results cached by content hash |

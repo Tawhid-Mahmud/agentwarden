@@ -11,6 +11,7 @@ from agentwarden.errors import ConfigurationError
 
 DATA_DIR = Path(__file__).parent / "data"
 DEFAULT_POLICY_PATH = DATA_DIR / "policy.yaml"
+DEFAULT_CEDAR_POLICY_PATH = DATA_DIR / "policy.cedar"
 DEFAULT_DIRECTORY_PATH = DATA_DIR / "directory.yaml"
 DEFAULT_CORPUS_PATH = DATA_DIR / "injection_corpus.yaml"
 DEFAULT_LLM_JUDGE_MODEL = "claude-opus-5-5"
@@ -73,8 +74,44 @@ class Settings:
     trust_proxy_headers: bool = False
     #: Lifetime of authorization receipts handed to tools.
     receipt_ttl: int = 60
+    #: Require every agent token to be DPoP-bound (RFC 9449). Off: binding is per token.
+    dpop_required: bool = False
+    #: How long a DPoP proof is accepted after its ``iat``.
+    dpop_max_age: int = 60
+    #: Public base URL clients use (e.g. https://warden.example.com). DPoP proofs name the URL
+    #: they were made for; behind a proxy, set this so AgentWarden checks the external URL.
+    public_url: str | None = None
+    #: Export OpenTelemetry traces and metrics over OTLP/HTTP from ``agentwarden serve``
+    #: (endpoint from OTEL_EXPORTER_OTLP_ENDPOINT; needs ``agentwarden[otel]``).
+    otel_enabled: bool = False
+    #: Policy backend: ``yaml`` (built in), ``cedar`` (in-process, needs ``agentwarden[cedar]``)
+    #: or ``opa`` (an OPA server, usually a sidecar). See docs/POLICY_BACKENDS.md.
+    policy_backend: str = "yaml"
+    #: OPA base URL (e.g. http://localhost:8181) and the path of the decision rule.
+    opa_url: str | None = None
+    opa_path: str = "agentwarden/authz/decision"
+    #: Bearer token for OPA's API, if OPA requires authentication.
+    opa_token: str | None = None
+    #: Seconds to wait for OPA before failing closed (deny).
+    opa_timeout: float = 2.0
+
+    @property
+    def effective_policy_path(self) -> Path:
+        """The policy file for file-based backends: Cedar uses the bundled ``policy.cedar``
+        unless a policy path was configured explicitly."""
+        if self.policy_backend == "cedar" and self.policy_path == DEFAULT_POLICY_PATH:
+            return DEFAULT_CEDAR_POLICY_PATH
+        return self.policy_path
 
     def __post_init__(self) -> None:
+        if self.policy_backend not in ("yaml", "cedar", "opa"):
+            raise ConfigurationError("policy_backend must be yaml, cedar or opa")
+        if self.policy_backend == "opa" and not self.opa_url:
+            raise ConfigurationError("the OPA policy backend needs opa_url (AGENTWARDEN_OPA_URL)")
+        if self.opa_url and not self.opa_url.startswith(("http://", "https://")):
+            raise ConfigurationError("opa_url must be an http(s) URL")
+        if not 0.1 <= self.opa_timeout <= 30:
+            raise ConfigurationError("opa_timeout must be between 0.1 and 30 seconds")
         if not 30 <= self.default_token_ttl <= self.max_token_ttl:
             raise ConfigurationError("default_token_ttl must be between 30s and max_token_ttl")
         if self.max_token_ttl > 86_400:
@@ -101,6 +138,10 @@ class Settings:
         ):
             if getattr(self, name) < 0:
                 raise ConfigurationError(f"{name} can't be negative (0 disables it)")
+        if not 10 <= self.dpop_max_age <= 600:
+            raise ConfigurationError("dpop_max_age must be between 10 and 600 seconds")
+        if self.public_url and not self.public_url.startswith(("https://", "http://")):
+            raise ConfigurationError("public_url must be an http(s) URL")
         if not 5 <= self.receipt_ttl <= 600:
             raise ConfigurationError("receipt_ttl must be between 5 and 600 seconds")
         if not self.api_keys_enabled and not self.oidc_issuer:
@@ -170,4 +211,13 @@ class Settings:
             rate_limit_per_agent=get_int("RATE_LIMIT_PER_AGENT", base.rate_limit_per_agent),
             trust_proxy_headers=(get("TRUST_PROXY_HEADERS") or "").lower() in _TRUE,
             receipt_ttl=get_int("RECEIPT_TTL", base.receipt_ttl),
+            dpop_required=(get("DPOP_REQUIRED") or "").lower() in _TRUE,
+            dpop_max_age=get_int("DPOP_MAX_AGE", base.dpop_max_age),
+            public_url=(get("PUBLIC_URL") or "").rstrip("/") or None,
+            otel_enabled=(get("OTEL") or "").lower() in _TRUE,
+            policy_backend=(get("POLICY_BACKEND") or base.policy_backend).lower(),
+            opa_url=(get("OPA_URL") or "").rstrip("/") or None,
+            opa_path=get("OPA_PATH") or base.opa_path,
+            opa_token=get("OPA_TOKEN") or None,
+            opa_timeout=float(get("OPA_TIMEOUT") or base.opa_timeout),
         )

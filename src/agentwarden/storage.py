@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS used_id_tokens (
     expires_at {real} NOT NULL
 );
 
+-- DPoP proofs already presented (replay protection), kept for their acceptance window.
+CREATE TABLE IF NOT EXISTS used_dpop_proofs (
+    proof_hash TEXT PRIMARY KEY,
+    expires_at {real} NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     seq        {bigint} PRIMARY KEY,
     ts         TEXT NOT NULL,
@@ -89,6 +95,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
     hash       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_audit_agent_ts ON audit_log(agent_id, ts);
+
+-- How far each SIEM export has delivered the audit chain (the last seq and its hash).
+CREATE TABLE IF NOT EXISTS export_cursors (
+    name       TEXT PRIMARY KEY,
+    seq        {bigint} NOT NULL,
+    hash       TEXT NOT NULL,
+    updated_at {real} NOT NULL
+);
 """
 
 #: Kept for compatibility: the SQLite flavor of the schema.
@@ -100,7 +114,9 @@ TABLES = (
     "subject_revocations",
     "approvals",
     "used_id_tokens",
+    "used_dpop_proofs",
     "audit_log",
+    "export_cursors",
 )
 
 #: Columns added after a table first shipped: (table, column, definition). Applied on startup to

@@ -26,9 +26,20 @@ def b64url_decode(data: str) -> bytes:
     return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
 
 
-def jwk_thumbprint(jwk: dict[str, str]) -> str:
-    """RFC 7638 thumbprint of an OKP public key. Used as the key id (``kid``)."""
-    required = {k: jwk[k] for k in ("crv", "kty", "x")}
+#: RFC 7638 required members per key type.
+_THUMBPRINT_MEMBERS = {
+    "OKP": ("crv", "kty", "x"),
+    "EC": ("crv", "kty", "x", "y"),
+    "RSA": ("e", "kty", "n"),
+}
+
+
+def jwk_thumbprint(jwk: dict[str, Any]) -> str:
+    """RFC 7638 thumbprint of a public JWK (OKP, EC or RSA). Used as ``kid`` and DPoP ``jkt``."""
+    members = _THUMBPRINT_MEMBERS.get(str(jwk.get("kty")))
+    if members is None or not all(isinstance(jwk.get(m), str) for m in members):
+        raise ValueError("unsupported or incomplete JWK")
+    required = {k: jwk[k] for k in members}
     canonical = json.dumps(required, separators=(",", ":"), sort_keys=True)
     return b64url(hashlib.sha256(canonical.encode("ascii")).digest())
 

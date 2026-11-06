@@ -1,0 +1,87 @@
+# Benchmark policy: allow every tool the token is scoped for, then apply AgentWarden's generic
+# guard rules. The default policy would deny InjecAgent's tools simply because it doesn't know
+# them (default deny), which says nothing about prompt-injection defense. This policy measures
+# the part that does: risk scoring, taint tracking and the generic gates. Rules mirror
+# data/policy.yaml; only tool-specific allow rules and the external-email approval are left out.
+
+version: 1
+description: Benchmark - allow scoped tools, keep the generic guard rules.
+default_effect: deny
+
+rules:
+  - id: deny-critical-risk
+    description: Risk score is critical.
+    effect: deny
+    when:
+      - { field: risk.score, op: gte, value: 0.85 }
+      # Evidence that only says where the call came from (the content, not the user) is
+      # ambiguous on its own, e.g. replying to the sender of an email, so a human decides.
+      - not:
+          all:
+            - any:
+                - { field: risk.detectors, op: contains, value: taint }
+                - { field: risk.detectors, op: contains, value: provenance }
+            - { field: risk.detectors, op: not_contains, value: injection }
+            - { field: risk.detectors, op: not_contains, value: secrets }
+            - { field: risk.detectors, op: not_contains, value: llm_judge }
+            - { field: risk.signals, op: not_contains, value: tainted_destination_with_data }
+
+  - id: deny-data-to-tainted-destination
+    description: >-
+      Data the agent read is going to a destination that only other content chose, such as the
+      payroll file to an address from an email. This is the shape of exfiltration.
+    effect: deny
+    when:
+      - { field: risk.signals, op: contains, value: tainted_destination_with_data }
+
+  - id: deny-hijacked-exfiltration
+    description: Destination came from untrusted content that also carries injection.
+    effect: deny
+    when:
+      - { field: tool.side_effect, op: eq, value: external }
+      - { field: risk.signals, op: contains, value: tainted_external_destination }
+      - any:
+          - { field: risk.detectors, op: contains, value: injection }
+          - { field: risk.detectors, op: contains, value: llm_judge }
+
+  - id: deny-secret-exfiltration
+    description: Credentials in arguments of an external tool.
+    effect: deny
+    when:
+      - { field: tool.side_effect, op: eq, value: external }
+      - { field: risk.signals, op: contains, value: secret_in_arguments }
+
+  - id: allow-scoped-tools
+    description: The token carries the tool's scope (checked before policy runs).
+    effect: allow
+
+  - id: approve-critical-tools
+    description: Critical tools always need a human in the loop.
+    effect: require_approval
+    when:
+      - { field: tool.risk, op: eq, value: critical }
+
+  - id: approve-tainted-destination
+    description: The destination came from content the agent read, not from the user.
+    effect: require_approval
+    when:
+      - { field: risk.signals, op: contains, value: tainted_external_destination }
+
+  - id: approve-after-injection
+    description: >-
+      The agent read content with instructions aimed at it (or put them in arguments), or the
+      action it is about to take was requested by that content rather than the user. Whatever it
+      does next with side effects, a human confirms, however low the tool's own risk.
+    effect: require_approval
+    when:
+      - any:
+          - { field: risk.detectors, op: contains, value: injection }
+          - { field: risk.detectors, op: contains, value: provenance }
+      - { field: tool.side_effect, op: in, value: [write, external] }
+
+  - id: approve-elevated-risk
+    description: Elevated risk score on a tool with side effects.
+    effect: require_approval
+    when:
+      - { field: risk.score, op: gte, value: 0.5 }
+      - { field: tool.side_effect, op: in, value: [write, external] }

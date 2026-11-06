@@ -27,7 +27,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agentwarden.errors import PolicyError
 from agentwarden.models import Decision
-from agentwarden.policy.engine import PolicyEngine, base_context, deep_merge
+from agentwarden.policy.backends import DEFAULT_OPA_PATH, load_backend
+from agentwarden.policy.engine import base_context, deep_merge
 
 
 class PolicyTestCase(BaseModel):
@@ -66,35 +67,53 @@ def load_suite(path: str | Path) -> PolicyTestSuite:
         raise PolicyError(f"invalid policy test suite {path}: {exc}") from exc
 
 
-def run_suite(path: str | Path, policy_path: str | Path | None = None) -> list[CaseResult]:
-    """Run every case in the suite. ``policy_path`` overrides the suite's own ``policy`` key."""
+def run_suite(
+    path: str | Path,
+    policy_path: str | Path | None = None,
+    *,
+    backend: str = "yaml",
+    opa_url: str | None = None,
+    opa_path: str = DEFAULT_OPA_PATH,
+) -> list[CaseResult]:
+    """Run every case in the suite against a policy backend.
+
+    ``policy_path`` overrides the suite's own ``policy`` key. With ``backend="cedar"`` and no
+    override, the ``.cedar`` file next to the suite's YAML policy is used (same stem), so one
+    suite can check a policy and its Cedar port. With ``backend="opa"``, cases go to the OPA
+    server at ``opa_url``.
+    """
     path = Path(path)
     suite = load_suite(path)
-    if policy_path is None:
+    if policy_path is None and backend != "opa":
         if suite.policy is None:
             raise PolicyError(f"{path}: no policy given (use --policy or a 'policy' key)")
         policy_path = (path.parent / suite.policy).resolve()
-    engine = PolicyEngine.from_file(policy_path)
+        if backend == "cedar":
+            policy_path = Path(policy_path).with_suffix(".cedar")
+    engine = load_backend(backend, policy_path=policy_path, opa_url=opa_url, opa_path=opa_path)
 
-    results = []
-    for case in suite.cases:
-        context = deep_merge(base_context(), case.input)
-        outcome = engine.evaluate(context)
-        missing = [r for r in case.expect_rules if r not in outcome.matched_rules]
-        passed = outcome.decision is case.expect and not missing
-        message = ""
-        if outcome.decision is not case.expect:
-            message = f"expected {case.expect.value}, got {outcome.decision.value}"
-        elif missing:
-            message = f"expected rules did not match: {', '.join(missing)}"
-        results.append(
-            CaseResult(
-                name=case.name,
-                passed=passed,
-                expected=case.expect,
-                actual=outcome.decision,
-                matched_rules=outcome.matched_rules,
-                message=message,
+    try:
+        results = []
+        for case in suite.cases:
+            context = deep_merge(base_context(), case.input)
+            outcome = engine.evaluate(context)
+            missing = [r for r in case.expect_rules if r not in outcome.matched_rules]
+            passed = outcome.decision is case.expect and not missing
+            message = ""
+            if outcome.decision is not case.expect:
+                message = f"expected {case.expect.value}, got {outcome.decision.value}"
+            elif missing:
+                message = f"expected rules did not match: {', '.join(missing)}"
+            results.append(
+                CaseResult(
+                    name=case.name,
+                    passed=passed,
+                    expected=case.expect,
+                    actual=outcome.decision,
+                    matched_rules=outcome.matched_rules,
+                    message=message,
+                )
             )
-        )
+    finally:
+        engine.close()
     return results

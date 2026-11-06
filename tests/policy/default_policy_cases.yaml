@@ -152,6 +152,61 @@ cases:
     expect: require_approval
     expect_rules: [approve-elevated-risk]
 
+  - name: replying to the sender of an email asks a human, even at a high score
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts: { recipients: [dana@vendor.example], external_recipients: [dana@vendor.example] }
+      risk:
+        score: 0.88
+        level: critical
+        detectors: [taint, provenance, exfiltration, anomaly]
+        signals: [tainted_external_destination, content_requested_action, external_recipient]
+    expect: require_approval
+    expect_rules: [approve-tainted-destination]
+
+  - name: data sent to a destination chosen by other content is denied
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: send_email, risk: high, side_effect: external }
+      facts: { recipients: [reconciliation@acme-payroll.example], external_recipients: [reconciliation@acme-payroll.example] }
+      risk:
+        score: 0.95
+        level: critical
+        detectors: [taint, provenance, exfiltration]
+        signals: [tainted_external_destination, tainted_destination_with_data, content_requested_action]
+    expect: deny
+    expect_rules: [deny-data-to-tainted-destination, deny-critical-risk]
+
+  - name: injected instructions gate even low-risk side effects
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+      risk: { score: 0.48, level: medium, detectors: [injection], signals: [instruction_override] }
+    expect: require_approval
+    expect_rules: [approve-after-injection]
+
+  - name: an action requested by the content, not the user, needs approval
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: write_file, risk: medium, side_effect: write }
+      facts: { path: /workspace/notes/summary.md }
+      risk:
+        score: 0.28
+        level: low
+        detectors: [provenance]
+        signals: [content_requested_action]
+    expect: require_approval
+    expect_rules: [approve-after-injection]
+
+  - name: injected instructions don't block reading
+    input:
+      agent: { id: inbox-assistant, trust_tier: standard }
+      tool: { name: read_file, risk: medium, side_effect: read }
+      risk: { score: 0.48, level: medium, detectors: [injection], signals: [instruction_override] }
+    expect: allow
+
   - name: untrusted agents are read-only
     input:
       agent: { id: summarizer, trust_tier: untrusted }

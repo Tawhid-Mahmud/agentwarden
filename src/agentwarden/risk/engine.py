@@ -18,6 +18,7 @@ from agentwarden.risk.detectors import (
     SecretDetector,
     TaintFlowDetector,
 )
+from agentwarden.risk.provenance import ActionProvenanceDetector
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ def detector_score(weights: Sequence[float]) -> float:
 
 
 #: Detectors whose evidence can come purely from the content the agent has read.
-CONTEXT_DETECTORS = frozenset({"injection", "llm_judge"})
+CONTEXT_DETECTORS = frozenset({"injection", "provenance", "llm_judge"})
 #: Ceiling for evidence that only says "the context is poisoned". A poisoned context means the
 #: agent *may* be compromised, which calls for a human (approval) rather than a hard deny.
 #: Denies need call-level evidence too, such as a tainted destination or secrets in the arguments.
@@ -92,6 +93,7 @@ class RiskEngine:
     ) -> RiskEngine:
         detectors: list[Detector] = [
             InjectionDetector(),
+            ActionProvenanceDetector(),
             TaintFlowDetector(),
             SecretDetector(),
             ExfiltrationDetector(),

@@ -168,11 +168,15 @@ class DelegationRequest(BaseModel):
     sub_agent_id: str = Field(pattern=AGENT_ID_PATTERN)
     scopes: list[str] = Field(min_length=1, max_length=50)
     ttl_seconds: int | None = Field(default=None, ge=30, le=86_400)
+    #: RFC 7638 thumbprint of the sub-agent's DPoP key; the child token is bound to it.
+    #: Required when the parent token is DPoP-bound, so delegation can't shed the binding.
+    dpop_jkt: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{43}$")
 
 
 class IssuedToken(BaseModel):
     access_token: str = Field(repr=False)
-    token_type: Literal["Bearer"] = "Bearer"  # noqa: S105
+    #: "DPoP" when the token is bound to a key the agent holds (RFC 9449).
+    token_type: Literal["Bearer", "DPoP"] = "Bearer"  # noqa: S105
     expires_in: int
     expires_at: datetime
     scope: list[str]

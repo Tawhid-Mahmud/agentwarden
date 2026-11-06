@@ -62,11 +62,12 @@ identity, delegated scopes, policy, provenance and human approval.
 
 | Boundary / threat | Mitigation in v0.1 | Residual risk / roadmap |
 |---|---|---|
-| **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Bearer tokens can be replayed until expiry → **DPoP sender-constrained tokens (v0.3)**; short TTLs (15 min default) limit the window |
+| **S**poofing: forged agent token (A3) | Ed25519 signatures; `EdDSA`-only verification before key use; `kid` pinning; `iss`/`aud`/`exp`/`iat` checks; structural consistency checks | Unbound tokens can be replayed until expiry: use **DPoP-bound tokens** (built; `AGENTWARDEN_DPOP_REQUIRED=true` enforces them) so a stolen token is useless without the agent's key; short TTLs (15 min default) limit the window either way |
 | **S**poofing: impersonating a user to mint tokens | OIDC sign-in: ID tokens verified with asymmetric algorithms only, exact `iss`/`aud`/`azp`, expiry, JWKS keys by `kid` with rate-limited refresh, verified email required, HTTPS issuers; demo API keys can be disabled | Each ID token can be exchanged once (tracked in the database, so across instances); replays are refused and audited |
 | **T**ampering: changing token claims | Signature covers all claims | n/a |
+| **T**ampering: answering for the policy backend (OPA) | OPA runs next to AgentWarden; bearer token and TLS supported; malformed, undefined, unknown or late answers deny (fail closed) | Whoever can answer for OPA decides every call: run it as a sidecar or on `localhost`, or authenticate it |
 | **T**ampering: changing approved arguments (A2) | Approval bound to `sha256(user, actor chain, tool, args)`; mismatch → deny + `approval.misuse` event | n/a |
-| **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain → export checkpoints to WORM storage or a SIEM (v0.3) |
+| **T**ampering: rewriting audit history (A5) | Hash chain detects modification, deletion and re-linking; signed checkpoints detect truncation | An attacker with DB *and* key access can rebuild the chain, but not what was already exported: `agentwarden audit export` ships entries to a SIEM and stops with `TAMPERED` if exported history changes (built). Export continuously and alert on exporter failures |
 | **T**ampering: calling a tool directly, skipping AgentWarden (A2) | MCP proxy mode; signed authorization receipts that tools verify (bound to tool, argument hash, 60 s lifetime, single use) | Tools that don't verify receipts and are reachable outside MCP |
 | **R**epudiation: "the agent did it, not me" | Every decision names `user`, `agent`, full `actor_chain`, token `jti`, task and argument hash | n/a |
 | **I**nformation disclosure: data exfiltration via tool arguments (A1) | Taint tracking of destinations, secret detection, exfiltration heuristics, approval for external recipients and outbound writes | Exfiltration through *allowed* internal channels, or steganography in content, is not detected |
@@ -107,9 +108,13 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Out of scope / known limitations
 
-- **Detection is evadable.** The bundled corpus documents a known miss (plain-language tool
-  coercion) and false positives (text that discusses attacks). Deterministic controls are the
-  primary defense.
+- **Detection is evadable.** The phrase detector only catches explicit overrides. Action provenance
+  catches most plain-language injections that ask for what the agent then does, but it is lexical:
+  text that avoids request phrasing ("the Taxes folder belongs in /Archive") or synonyms outside
+  its verb families get through. On the held-out InjecAgent split, 13.8% of plain-language
+  direct-harm attacks succeed if critical-tier approval is off ([BENCHMARK.md](BENCHMARK.md)).
+  Deterministic controls are the primary defense: keep scopes narrow and mark dangerous tools
+  critical. A semantic model (the optional Claude judge or a classifier) is the path further.
 - **Taint tracking is substring-based.** A destination the model rewrites (encodes, splits,
   paraphrases) may not match its untrusted source. Research-grade information-flow control is
   future work.
@@ -125,11 +130,14 @@ identity, delegated scopes, policy, provenance and human approval.
 
 ## Security testing
 
-Adversarial cases covered by the test suite (346 tests):
+Adversarial cases covered by the test suite (459 tests):
 
 - **Tokens**: `alg=none`, HS256 key confusion using the public key, foreign signing keys, unknown
   `kid`, payload tampering, expiry, future `iat`, wrong audience, revocation (token, ancestor,
   subject), structurally inconsistent claims.
+- **DPoP**: stolen tokens with an attacker's key, `Bearer` downgrade, proof replay (also across
+  instances sharing a database), wrong method, URL or token hash, stale and future proofs, HMAC and
+  unsigned proofs, private key material in the header, unbound tokens under the DPoP scheme.
 - **Delegation**: escalation, cycles, depth limits, lifetime clamping, ceiling attenuation.
 - **Policy**: missing fields, type confusion (bool vs. number), case variations, list semantics,
   default deny, approvals that can't unlock forbidden actions, path traversal (`..`, `%2e%2e`,
@@ -138,6 +146,7 @@ Adversarial cases covered by the test suite (346 tests):
   base64, CSS/HTML-hidden text, markdown image exfiltration, emoji ZWJ false-positive guard.
 - **Approvals**: replay, argument tampering, actor-chain changes, self-approval, missing role, expiry.
 - **Audit**: modified, deleted and re-linked rows, re-hashed rows, truncation versus checkpoints,
-  forged checkpoints.
+  forged checkpoints; the SIEM exporter refusing to continue after exported entries are edited,
+  deleted, re-linked, or truncated and replaced with a forged but internally consistent tail.
 - **Repository hygiene**: CI fails on any invisible or bidirectional control character in the
   source (Trojan Source, CVE-2021-42574); test secrets are assembled at runtime.
