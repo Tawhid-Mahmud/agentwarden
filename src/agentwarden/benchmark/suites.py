@@ -51,6 +51,7 @@ _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 RISK_RULES = frozenset(
     {
         "deny-critical-risk",
+        "deny-data-to-tainted-destination",
         "deny-hijacked-exfiltration",
         "deny-secret-exfiltration",
         "approve-tainted-destination",

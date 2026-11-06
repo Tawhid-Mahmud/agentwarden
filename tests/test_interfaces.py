@@ -345,13 +345,13 @@ def run(capsys: pytest.CaptureFixture[str], *argv: str) -> tuple[int, str]:
 def test_cli_basics(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
     assert run(capsys, "version") == (0, f"agentwarden {__version__}\n")
     code, out = run(capsys, "policy", "validate")
-    assert code == 0 and "17 rules" in out
+    assert code == 0 and "18 rules" in out
     bad = tmp_path / "bad.yaml"
     bad.write_text("version: 1\nrules: []\n")
     code, out = run(capsys, "policy", "validate", str(bad))
     assert code == 2 and "invalid policy" in out
     code, out = run(capsys, "policy", "test", "tests/policy/default_policy_cases.yaml")
-    assert code == 0 and "26/26 policy cases passed" in out
+    assert code == 0 and "28/28 policy cases passed" in out
 
 
 def test_cli_policy_test_failure(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

@@ -138,6 +138,7 @@
     encoded_instructions: "Encoded (base64) instructions",
     injection_in_arguments: "Injected instructions copied into the arguments",
     llm_injection_verdict: "AI judge flagged the content as an injection",
+    tainted_destination_with_data: "Data the agent read is going where only other content said to send it",
     tainted_external_destination: "Destination came from content the agent read, not the user",
     tainted_internal_destination: "Internal destination came from content the agent read",
     tainted_path: "File path came from content the agent read",
@@ -163,6 +164,9 @@
   // The answer to "why is this here?", from the most telling signal.
   function verdict(signals) {
     const has = (name) => signals.some((s) => s.name === name);
+    if (has("tainted_destination_with_data"))
+      return { alarm: true, short: "Data leaving to content's address", title: "Data is leaving to an address the content chose",
+        text: "The agent is sending data it read elsewhere, such as a file, to a destination that appeared only in other content. This is what exfiltration looks like." };
     if (has("content_requested_action"))
       return { alarm: true, short: "Content asked for this", title: "The request came from the content, not the user",
         text: "Something the agent read asked for this action. The user's own request doesn't mention it." };

@@ -291,9 +291,9 @@ def test_gateway_with_cedar(cedar_gateway: Gateway) -> None:
 
 def test_cli(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["policy", "test", "--backend", "cedar", str(SUITE)]) == 0
-    assert "26/26 policy cases passed" in capsys.readouterr().out
+    assert "28/28 policy cases passed" in capsys.readouterr().out
     assert main(["policy", "validate", str(DEFAULT_CEDAR_POLICY_PATH)]) == 0
-    assert "18 Cedar policies" in capsys.readouterr().out
+    assert "19 Cedar policies" in capsys.readouterr().out
 
 
 # ================================================================================ real OPA

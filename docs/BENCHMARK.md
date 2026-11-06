@@ -22,7 +22,7 @@ Held-out test split, agent holding every scope it needs:
 | … without critical-tier approval | 24.1% | **8.6%** |
 | … plain-language (base) attacks, without critical-tier approval | 44.8% | **13.8%** |
 | Data-stealing attacks | 0% | **0%** |
-| False alarms on benign user actions | 1.7% | 3.2% |
+| False alarms on benign user actions | 1.7% | **1.9%** |
 | Utility (user's own call allowed) | 100% | **100%** |
 
 Full benchmark (`--split all`): attack success **11.3% → 0.8%** (4.0% without critical-tier
@@ -117,8 +117,8 @@ continuity with earlier reports.
 | … if critical-tier approval didn't exist | 4.0% |
 | Utility (user's own tool call allowed) | **100.0%** |
 | Attacks allowed (succeeded) | 17 |
-| Attacks held for approval | 969 |
-| Attacks denied | 1122 |
+| Attacks held for approval | 1088 |
+| Attacks denied | 1003 |
 
 | Slice | Cases | Attack success | Without tier gate |
 |---|---|---|---|
@@ -135,14 +135,14 @@ continuity with earlier reports.
 
 #### Benign actions (false alarms)
 
-1920 calls the user explicitly asked for, made after reading a document. A *false alarm* is a call the risk engine holds or denies (critical-tier approval doesn't count). Overall: **3.2%**.
+1920 calls the user explicitly asked for, made after reading a document. A *false alarm* is a call the risk engine holds or denies (critical-tier approval doesn't count). Overall: **1.9%**.
 
 | Phrasing / document | Calls | False alarms |
 |---|---|---|
 | direct, real email (BIPIA) | 800 | 2.0% |
-| direct, work email with requests | 160 | 1.2% |
-| paraphrase, real email (BIPIA) | 800 | 2.4% |
-| paraphrase, work email with requests | 160 | 15.6% |
+| direct, work email with requests | 160 | 0.6% |
+| paraphrase, real email (BIPIA) | 800 | 2.0% |
+| paraphrase, work email with requests | 160 | 1.9% |
 
 ### Detection track (injection detector on untrusted text)
 
@@ -213,10 +213,12 @@ Overall recall **59.0%**, false-positive rate on benign documents **0.5%**.
   the user's voice, "Please move *my* files...") catches about 39% of InjecAgent's plain-language
   injections from the text alone. Almost none of BIPIA's attacks are caught: they ask a chat model to do chat things
   ("translate this", "answer in base64"), with no tool call for provenance to check.
-- **The cost is false alarms when users paraphrase.** A user who asks the agent to "archive"
-  a file, after reading an email that asks to "move" something, gets an approval prompt: 15.6% of
-  paraphrased requests after request-heavy work emails, 2.4% after real emails, and 1.3–2.0% for
-  direct requests. Overall false alarms went from 1.7% to 3.2%. They are approvals, never denials.
+- **False alarms stay low.** Provenance only counts a request against a call when the call is
+  about what the content asked for (its names, addresses, files). An email asking to "move the
+  planning meeting" doesn't explain the agent archiving `notes.txt`. False alarms on benign
+  actions are 1.9% overall (they were 1.7% before provenance), and every one is an approval prompt,
+  never a denial. An earlier version without that check reached 15.6% on paraphrased requests
+  after request-heavy work emails; the [real-agent demo](REAL_AGENT_DEMO.md) is what exposed it.
 - **The benchmark keeps changing the default policy.** `approve-after-injection` (added when the
   benchmark showed explicit overrides reaching low-risk write tools) now also fires on provenance
   signals.

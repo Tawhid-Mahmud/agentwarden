@@ -65,6 +65,21 @@ _REQUEST_LEAD = re.compile(
 _FIRST_PERSON = re.compile(r"\bmy\b")
 
 
+#: Words too common to tie a request to a call (articles, pronouns, politeness, verbs we match
+#: separately).
+_FILLER = _set(
+    "the and for with from that this those these there their your you yours our ours have "
+    "has had will would could should can please kindly thanks thank hello dear regards best "
+    "just also into onto over under about what when where which while them they then than "
+    "been being some any all each every more most need needs want wants make sure today "
+    "tomorrow asap end day week"
+) | frozenset(_FAMILY_OF)
+
+
+def _content_words(tokens: Iterable[str]) -> set[str]:
+    return {t for t in tokens if len(t) >= 3 and t not in _FILLER}
+
+
 def _stem(word: str) -> str:
     for suffix in ("ing", "ed", "es", "s"):
         if word.endswith(suffix) and len(word) - len(suffix) >= 3:
@@ -204,6 +219,7 @@ class ActionProvenanceDetector:
         factor = ctx.sink_factor
         user_actions = verb_actions(words(ctx.trusted_text))
         profile = tool_profile(ctx.tool.name)
+        call_words = _content_words(w for _, value in ctx.strings for w in words(value))
         side_effect = self.call_level and ctx.tool.side_effect in (
             SideEffect.WRITE,
             SideEffect.EXTERNAL,
@@ -226,6 +242,11 @@ class ActionProvenanceDetector:
                     performs = frozenset() if "execute" in user_actions else request.actions
                 shared = request.actions & performs
                 if not side_effect or not shared or shared & user_actions:
+                    continue
+                # With arguments, the call must also be about what the content asked for (its
+                # names, addresses, files): a request to "send the payroll file to X" doesn't
+                # explain an email to Bob about lunch. Calls without arguments can't be compared.
+                if call_words and not _content_words(request.tokens) & call_words:
                     continue
                 weight = 0.5 if request.tokens & profile.objects else 0.35
                 if best_match is None or weight > best_match[0]:

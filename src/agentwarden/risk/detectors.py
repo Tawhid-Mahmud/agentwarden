@@ -21,6 +21,7 @@ from urllib.parse import parse_qsl, urlsplit
 from agentwarden.models import ContextSegment, RiskLevel, RiskSignal, SideEffect, Tool
 from agentwarden.risk.text import (
     BIDI_CONTROLS,
+    RECIPIENT_KEYS,
     CallFacts,
     count_in_word_zero_width,
     decode_base64_candidates,
@@ -269,6 +270,7 @@ class TaintFlowDetector:
 
         signals: list[RiskSignal] = []
         seen: set[str] = set()
+        chosen_by: dict[str, str] = {}  # external destination -> the content that chose it
         destinations: list[tuple[str, str]] = [(r, email_domain(r)) for r in ctx.facts.recipients]
         for url in ctx.facts.urls:
             host = url_host(url)
@@ -280,6 +282,8 @@ class TaintFlowDetector:
                 continue
             seen.add(key)
             external = not ctx.is_trusted_domain(domain)
+            if external:
+                chosen_by[value] = source_of(value)
             signals.append(
                 RiskSignal(
                     detector=self.name,
@@ -294,6 +298,8 @@ class TaintFlowDetector:
                 )
             )
 
+        signals.extend(self._data_to_tainted_destination(ctx, chosen_by, trusted_text))
+
         path = ctx.facts.path
         if path and path.casefold() in untrusted_text and path.casefold() not in trusted_text:
             signals.append(
@@ -306,6 +312,51 @@ class TaintFlowDetector:
                 )
             )
         return signals
+
+    #: Lines shorter than this are too common ("Thanks,", "Hi Alice") to show where data came from.
+    MIN_DATA_LINE = 16
+
+    def _data_to_tainted_destination(
+        self, ctx: DetectionContext, chosen_by: Mapping[str, str], trusted_text: str
+    ) -> list[RiskSignal]:
+        """Data from one source going to a destination another source chose: exfiltration.
+
+        Replying to the sender of an email is ambiguous (a human should decide). Sending the
+        payroll file to an address that only appeared in an email is not: the content picked
+        where *other* data the agent read should go.
+        """
+        if not chosen_by:
+            return []
+        payload = normalize(
+            " ".join(
+                v
+                for path, v in ctx.strings
+                if path.split(".")[1:2] != [] and path.split(".")[1] not in RECIPIENT_KEYS
+            )
+        )
+        if not payload:
+            return []
+        for segment in ctx.untrusted_segments:
+            if segment.source in chosen_by.values():
+                continue  # quoting the email that asked is not moving other data
+            for line in reveal_hidden(segment.content).splitlines():
+                piece = normalize(line)
+                if len(piece) < self.MIN_DATA_LINE or piece in trusted_text or piece not in payload:
+                    continue
+                destination = next(iter(chosen_by))
+                return [
+                    RiskSignal(
+                        detector=self.name,
+                        name="tainted_destination_with_data",
+                        weight=0.8,
+                        evidence=(
+                            f"data from {segment.source} is going to {destination!r}, which came "
+                            f"from {chosen_by[destination]}"
+                        ),
+                        location="arguments",
+                    )
+                ]
+        return []
 
 
 # =========================================================================== secrets

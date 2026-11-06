@@ -177,10 +177,10 @@ gantt
 | Authorization latency (in-process, heuristics only) | p95 < 5 ms | ✅ **0.95 ms** clean call · **3.6 ms** with 2.5 KB of context | 500-call micro-benchmark incl. token verification and audit write |
 | Injection corpus recall / FPR | ≥ 90% / ≤ 10% | ✅ **95.2% / 8.7%** (precision 90.9%) | `agentwarden eval` on the bundled corpus, CI gate |
 | Static analysis | 0 high-severity findings | ✅ 0 findings | `bandit`, `ruff` security rules, Trojan Source scan |
-| Policy regressions | 0 failing policy cases | ✅ 26/26 | `agentwarden policy test` in CI |
+| Policy regressions | 0 failing policy cases | ✅ 28/28 | `agentwarden policy test` in CI |
 
 | Public benchmark (InjecAgent, full gateway) | attack success ≤ 3%, utility ≥ 99% | ✅ **0.8%** all · **1.7%** held-out (0% data stealing) / **100%** | `agentwarden bench`, CI gate |
-| Benign user actions after reading documents | false alarms ≤ 5% | ✅ **3.2%** (15.6% for paraphrases after request-heavy email) | `agentwarden bench`, CI gate |
+| Benign user actions after reading documents | false alarms ≤ 5% | ✅ **1.9%** | `agentwarden bench`, CI gate |
 | Public benchmark (BIPIA documents) | false positives ≤ 2% | ✅ **0.5%** (detector recall 59.0% overall) | `agentwarden bench`, CI gate |
 
 > The bundled corpus is small and hand-written. It works as a **regression suite**, not as a

@@ -19,7 +19,29 @@ import rego.v1
 side_effecting if input.tool.side_effect in {"write", "external"}
 
 # ------------------------------------------------------------------------------ hard denies
-deny contains "deny-critical-risk" if input.risk.score >= 0.85
+deny contains "deny-critical-risk" if {
+	input.risk.score >= 0.85
+	not provenance_only
+}
+
+# Evidence that only says where the call came from is ambiguous ("reply to the sender"):
+# a human decides instead.
+provenance_only if {
+	some detector in input.risk.detectors
+	detector in {"taint", "provenance"}
+	not hard_evidence
+}
+
+hard_evidence if {
+	some detector in input.risk.detectors
+	detector in {"injection", "secrets", "llm_judge"}
+}
+
+hard_evidence if "tainted_destination_with_data" in input.risk.signals
+
+deny contains "deny-data-to-tainted-destination" if {
+	"tainted_destination_with_data" in input.risk.signals
+}
 
 deny contains "deny-hijacked-exfiltration" if {
 	input.tool.side_effect == "external"

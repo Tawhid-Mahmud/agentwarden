@@ -23,7 +23,7 @@ policy can be written in Cedar or Rego.
   requests written in the user's voice inside data (`request_in_user_voice`). This catches
   politely worded injections that contain no "ignore previous instructions". The default policy
   holds such calls for approval. On the held-out InjecAgent split: attack success 8.6% → 1.7%,
-  and 24.1% → 8.6% without critical-tier approval; benign-action false alarms 1.7% → 3.2%.
+  and 24.1% → 8.6% without critical-tier approval; benign-action false alarms 1.7% → 1.9%.
 - **Cedar and OPA policy backends** (`AGENTWARDEN_POLICY_BACKEND=yaml|cedar|opa`,
   `docs/POLICY_BACKENDS.md`). Cedar runs in-process (`pip install 'agentwarden[cedar]'`); each call
   is asked as `call` and `call_unattended`, so `forbid` on the latter means approval. OPA is asked
@@ -32,6 +32,14 @@ policy can be written in Cedar or Rego.
   (which Cedar would skip), means deny. The default policy is ported to `data/policy.cedar` and
   `data/policy.rego` with the same rule IDs; `agentwarden policy test --backend cedar|opa` runs the
   same suite against them, and CI does so against a real OPA server.
+- **Real-agent demo** (`examples/hijack_demo.py`, `docs/REAL_AGENT_DEMO.md`): a Claude agent
+  (Messages API, manual tool loop, server-side refusal fallback) handles an inbox containing a
+  business-email-compromise request, with and without AgentWarden in front of its tools. A
+  scripted version runs in CI without an API key.
+- **New taint signal `tainted_destination_with_data`** and default rule
+  `deny-data-to-tainted-destination`: data the agent read from one source (a file) going to a
+  destination that only other content chose (an address in an email) is denied. That is the shape
+  of exfiltration, and unlike "reply to the sender" it isn't ambiguous.
 - Benchmark: a benign-action false-alarm set (`--max-false-alarms`), and dev/test splits
   (`--split`): detectors are developed on BIPIA's training files and half of InjecAgent, and the
   held-out half is reported.
@@ -57,6 +65,16 @@ policy can be written in Cedar or Rego.
   includes the OTLP exporter.
 
 ### Changed
+- **`deny-critical-risk` no longer denies on "where it came from" evidence alone.** When a high
+  score is made only of taint and provenance signals (no injection, secrets, LLM-judge verdict or
+  data going to a tainted destination), a human decides instead. Replying to the sender of an
+  email is legitimate as often as not. The demo showed an agent's reply confirming a vendor's
+  invoice being denied outright. Ported to Cedar and Rego; 28 policy cases pass on all three.
+- **Action provenance requires the call to be about what the content asked.** A request in content
+  only counts against a call whose arguments share its names, addresses or files (calls without
+  arguments are still checked). An email asking to send the payroll export no longer flags an
+  unrelated reply to a colleague. Benign false alarms fell from 3.2% to 1.9% (15.6% → 1.9% for
+  paraphrased requests after request-heavy email), with attack success unchanged.
 - **Approver console redesigned** as an inbox. A queue of waiting requests, most urgent first,
   sits next to the selected request. Each request reads in decision order:
   - a plain-language verdict ("The request came from the content, not the user"), quoting the

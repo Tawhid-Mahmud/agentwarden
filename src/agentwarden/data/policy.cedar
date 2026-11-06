@@ -18,7 +18,18 @@
 @id("deny-critical-risk")
 @description("Risk engine is highly confident this call is malicious or hijacked.")
 forbid (principal, action == Action::"call", resource)
-when { context.risk.score_pct >= 85 };
+when { context.risk.score_pct >= 85 }
+// Evidence that only says where the call came from is ambiguous ("reply to the sender"): a human decides.
+unless {
+  context.risk.detectors.containsAny(["taint", "provenance"]) &&
+  !context.risk.detectors.containsAny(["injection", "secrets", "llm_judge"]) &&
+  !context.risk.signals.contains("tainted_destination_with_data")
+};
+
+@id("deny-data-to-tainted-destination")
+@description("Data the agent read is going to a destination that only other content chose. This is the shape of exfiltration.")
+forbid (principal, action == Action::"call", resource)
+when { context.risk.signals.contains("tainted_destination_with_data") };
 
 @id("deny-hijacked-exfiltration")
 @description("An outbound destination came from untrusted content that also contains instructions aimed at the model.")

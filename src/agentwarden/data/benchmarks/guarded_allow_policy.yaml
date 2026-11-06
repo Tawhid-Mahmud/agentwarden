@@ -14,6 +14,25 @@ rules:
     effect: deny
     when:
       - { field: risk.score, op: gte, value: 0.85 }
+      # Evidence that only says where the call came from (the content, not the user) is
+      # ambiguous on its own, e.g. replying to the sender of an email, so a human decides.
+      - not:
+          all:
+            - any:
+                - { field: risk.detectors, op: contains, value: taint }
+                - { field: risk.detectors, op: contains, value: provenance }
+            - { field: risk.detectors, op: not_contains, value: injection }
+            - { field: risk.detectors, op: not_contains, value: secrets }
+            - { field: risk.detectors, op: not_contains, value: llm_judge }
+            - { field: risk.signals, op: not_contains, value: tainted_destination_with_data }
+
+  - id: deny-data-to-tainted-destination
+    description: >-
+      Data the agent read is going to a destination that only other content chose, such as the
+      payroll file to an address from an email. This is the shape of exfiltration.
+    effect: deny
+    when:
+      - { field: risk.signals, op: contains, value: tainted_destination_with_data }
 
   - id: deny-hijacked-exfiltration
     description: Destination came from untrusted content that also carries injection.
